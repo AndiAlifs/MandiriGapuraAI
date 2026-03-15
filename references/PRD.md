@@ -8,7 +8,7 @@
 GAPURA AI Studio is an enterprise-grade AI middleware platform serving as the centralized API gateway and developer studio for internal applications utilizing Large Language Models (LLMs). The platform ensures strict compliance with Indonesian data privacy laws (UU ITE & UU PDP) by scrubbing sensitive PII before data leaves the corporate network. It implements static routing with local failover, exact-match caching, and token-level cost tracking to dramatically reduce API overhead, guarantee uptime, and provide executives with a transparent audit trail of all AI utilization.
 
 ## 2. Technical Stack & Deployment (MVP)
-* **Backend (API Gateway):** .NET Core (C#)
+* **Backend (API Gateway):** Golang
 * **Frontend (Studio UI):** Angular
 * **Database:** MySQL
 * **Local AI Engine:** Ollama / vLLM (Quantized models optimized for an 8GB VRAM VPS constraint)
@@ -27,12 +27,12 @@ GAPURA AI Studio is an enterprise-grade AI middleware platform serving as the ce
 * **Dual-Logging Audit Trail:** Store both the *original raw prompt* (for internal security audits) and the *scrubbed prompt* (for model performance tracking) securely in the MySQL database.
 
 ### Epic 3: FinOps & Governance
-* **Token Counting & Cost Estimation:** Utilize a C# tokenization library to count exact input and output tokens. Calculate actual costs against a dynamic "Rate Card" in the database.
+* **Token Counting & Cost Estimation:** Utilize a Golang tokenization library to count exact input and output tokens. Calculate actual costs against a dynamic "Rate Card" in the database.
 * **Hard Quotas (Rate Limiting):** Enforce strict daily token limits or request limits per internal project. If a project hits its cap, the Gateway returns a standard `429 Too Many Requests` error to prevent budget overruns.
 
 ### Epic 4: GAPURA AI Studio (Angular Frontend)
 * **Model Playground:** A developer sandbox to test prompts, visualize token counts, and simulate costs across different models in real-time.
-* **"Get Code" Snippet Generator:** A one-click export inside the Playground that produces copy-pasteable integration snippets (C# `HttpClient`, Go, cURL) pre-injected with the user's specific API credentials and the GAPURA endpoint.
+* **"Get Code" Snippet Generator:** A one-click export inside the Playground that produces copy-pasteable integration snippets (Go, cURL) pre-injected with the user's specific API credentials and the GAPURA endpoint.
 * **Executive Scorecards:** Simple, high-impact numerical metric cards displaying:
   * *Total PII Entities Scrubbed* (proving UU PDP compliance).
   * *Total API Cost Saved* (calculating dollars saved via caching and local fallback).
