@@ -31,6 +31,7 @@ type ProcessInput struct {
 	RawBody     []byte
 	Request     openai.ChatCompletionRequest
 	RequestHash string
+	RequestID   string
 }
 
 type ProcessOutput struct {
@@ -88,31 +89,42 @@ func (s *Service) HashRequest(req openai.ChatCompletionRequest) string {
 }
 
 func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutput, error) {
+	rid := input.RequestID
+
 	if cached, ok := s.cacheStore.Get(input.RequestHash); ok {
+		log.Printf("[%s] pipeline: cache HIT hash=%s", rid, input.RequestHash[:12])
 		return ProcessOutput{StatusCode: http.StatusOK, Body: cached, FromCache: true}, nil
 	}
+	log.Printf("[%s] pipeline: cache MISS hash=%s, calling upstream", rid, input.RequestHash[:12])
 
 	start := time.Now()
-	body, status, modelUsed, usage, err := s.callCloudWithFallback(ctx, input.RawBody, input.Request)
+	body, status, modelUsed, usage, err := s.callCloudWithFallback(ctx, rid, input.RawBody, input.Request)
+	elapsed := time.Since(start)
+
 	if err != nil {
+		log.Printf("[%s] pipeline: upstream failed after %dms: %v", rid, elapsed.Milliseconds(), err)
 		return ProcessOutput{}, err
 	}
+
+	log.Printf("[%s] pipeline: upstream responded status=%d model=%q tokens(in=%d out=%d) latency=%dms",
+		rid, status, modelUsed, usage.PromptTokens, usage.CompletionTokens, elapsed.Milliseconds())
 
 	if status >= 200 && status < 300 {
 		s.cacheStore.Set(input.RequestHash, body)
 	}
 
-	go s.logAudit(input, body, modelUsed, usage, int(time.Since(start).Milliseconds()))
+	go s.logAudit(input, body, modelUsed, usage, int(elapsed.Milliseconds()))
 
 	return ProcessOutput{StatusCode: status, Body: body, FromCache: false}, nil
 }
 
-func (s *Service) callCloudWithFallback(ctx context.Context, rawBody []byte, req openai.ChatCompletionRequest) ([]byte, int, string, openai.UsageDetails, error) {
+func (s *Service) callCloudWithFallback(ctx context.Context, rid string, rawBody []byte, req openai.ChatCompletionRequest) ([]byte, int, string, openai.UsageDetails, error) {
 	provider, err := s.repo.ModelProvider(ctx, req.Model)
 	if err != nil {
-		log.Printf("model registry lookup failed, defaulting to OpenAI: %v", err)
+		log.Printf("[%s] provider: model registry lookup failed for model=%q, defaulting to OpenAI: %v", rid, req.Model, err)
 		provider = "OpenAI"
 	}
+	log.Printf("[%s] provider: selected provider=%q for model=%q", rid, provider, req.Model)
 
 	var cloudBody []byte
 	var cloudStatus int
@@ -121,9 +133,11 @@ func (s *Service) callCloudWithFallback(ctx context.Context, rawBody []byte, req
 
 	switch strings.ToLower(provider) {
 	case "gemini":
-		cloudBody, cloudStatus, cloudUsage, cloudErr = s.callGemini(ctx, rawBody)
+		log.Printf("[%s] provider: calling Gemini", rid)
+		cloudBody, cloudStatus, cloudUsage, cloudErr = s.callGemini(ctx, rid, rawBody)
 	default:
-		cloudBody, cloudStatus, cloudUsage, cloudErr = s.callOpenAI(ctx, rawBody)
+		log.Printf("[%s] provider: calling OpenAI", rid)
+		cloudBody, cloudStatus, cloudUsage, cloudErr = s.callOpenAI(ctx, rid, rawBody)
 	}
 
 	if cloudErr == nil && cloudStatus >= 200 && cloudStatus < 300 {
@@ -131,72 +145,98 @@ func (s *Service) callCloudWithFallback(ctx context.Context, rawBody []byte, req
 	}
 
 	if cloudErr != nil {
-		log.Printf("cloud call error, switching to local fallback: %v", cloudErr)
+		log.Printf("[%s] provider: cloud call error, attempting local fallback: %v", rid, cloudErr)
 	} else if cloudStatus != http.StatusTooManyRequests && cloudStatus < 500 {
+		log.Printf("[%s] provider: cloud returned status=%d (non-retryable), returning as-is", rid, cloudStatus)
 		return cloudBody, cloudStatus, req.Model, cloudUsage, nil
+	} else {
+		log.Printf("[%s] provider: cloud returned status=%d, attempting local fallback. body_snippet=%s",
+			rid, cloudStatus, truncate(string(cloudBody), 500))
 	}
 
 	fallbackModel, err := s.repo.LocalFallbackModel(ctx)
 	if err != nil {
+		log.Printf("[%s] fallback: failed to get local fallback model: %v", rid, err)
 		return nil, 0, "", openai.UsageDetails{}, err
 	}
+	log.Printf("[%s] fallback: using local model=%q via Ollama", rid, fallbackModel)
 
-	fallbackBody, fallbackUsage, err := s.callOllama(ctx, req, fallbackModel)
+	fallbackBody, fallbackUsage, err := s.callOllama(ctx, rid, req, fallbackModel)
 	if err != nil {
+		log.Printf("[%s] fallback: Ollama call failed: %v", rid, err)
 		if cloudErr != nil {
 			return nil, 0, "", openai.UsageDetails{}, fmt.Errorf("cloud and fallback both failed: cloud=%w fallback=%v", cloudErr, err)
 		}
 		return nil, 0, "", openai.UsageDetails{}, err
 	}
 
+	log.Printf("[%s] fallback: Ollama responded successfully model=%q", rid, fallbackModel)
 	return fallbackBody, http.StatusOK, fallbackModel, fallbackUsage, nil
 }
 
 // callProvider is the shared HTTP call used by callOpenAI and callGemini.
-func (s *Service) callProvider(ctx context.Context, rawBody []byte, endpointURL, authHeader, authValue string) ([]byte, int, openai.UsageDetails, error) {
+func (s *Service) callProvider(ctx context.Context, rid string, rawBody []byte, endpointURL, authHeader, authValue string) ([]byte, int, openai.UsageDetails, error) {
+	log.Printf("[%s] http-out: POST %s", rid, endpointURL)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(rawBody))
 	if err != nil {
+		log.Printf("[%s] http-out: failed to create request: %v", rid, err)
 		return nil, 0, openai.UsageDetails{}, err
 	}
 	req.Header.Set(authHeader, authValue)
 	req.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		log.Printf("[%s] http-out: request failed after %dms: %v", rid, time.Since(start).Milliseconds(), err)
 		return nil, 0, openai.UsageDetails{}, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[%s] http-out: failed to read response body: %v", rid, err)
 		return nil, 0, openai.UsageDetails{}, err
+	}
+
+	log.Printf("[%s] http-out: response status=%d body_size=%d latency=%dms",
+		rid, resp.StatusCode, len(body), time.Since(start).Milliseconds())
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("[%s] http-out: non-2xx response body_snippet=%s", rid, truncate(string(body), 500))
 	}
 
 	parsed, err := openai.DecodeResponse(body)
 	if err != nil {
+		log.Printf("[%s] http-out: could not parse response as ChatCompletionResponse: %v", rid, err)
 		return body, resp.StatusCode, openai.UsageDetails{}, nil
 	}
 	return body, resp.StatusCode, parsed.Usage, nil
 }
 
-func (s *Service) callOpenAI(ctx context.Context, rawBody []byte) ([]byte, int, openai.UsageDetails, error) {
+func (s *Service) callOpenAI(ctx context.Context, rid string, rawBody []byte) ([]byte, int, openai.UsageDetails, error) {
 	if s.cfg.OpenAIAPIKey == "" {
+		log.Printf("[%s] openai: API key not configured", rid)
 		return nil, 0, openai.UsageDetails{}, fmt.Errorf("OPENAI_API_KEY not configured")
 	}
 	endpoint := strings.TrimRight(s.cfg.OpenAIBaseURL, "/") + s.cfg.OpenAIChatPath
-	return s.callProvider(ctx, rawBody, endpoint, "Authorization", "Bearer "+s.cfg.OpenAIAPIKey)
+	return s.callProvider(ctx, rid, rawBody, endpoint, "Authorization", "Bearer "+s.cfg.OpenAIAPIKey)
 }
 
-func (s *Service) callGemini(ctx context.Context, rawBody []byte) ([]byte, int, openai.UsageDetails, error) {
+func (s *Service) callGemini(ctx context.Context, rid string, rawBody []byte) ([]byte, int, openai.UsageDetails, error) {
 	if s.cfg.GeminiAPIKey == "" {
+		log.Printf("[%s] gemini: API key not configured", rid)
 		return nil, 0, openai.UsageDetails{}, fmt.Errorf("GEMINI_API_KEY not configured")
 	}
 	// Gemini's OpenAI-compatible endpoint uses standard Bearer auth.
 	endpoint := strings.TrimRight(s.cfg.GeminiBaseURL, "/") + s.cfg.GeminiChatPath
-	return s.callProvider(ctx, rawBody, endpoint, "Authorization", "Bearer "+s.cfg.GeminiAPIKey)
+	return s.callProvider(ctx, rid, rawBody, endpoint, "Authorization", "Bearer "+s.cfg.GeminiAPIKey)
 }
 
-func (s *Service) callOllama(ctx context.Context, req openai.ChatCompletionRequest, localModel string) ([]byte, openai.UsageDetails, error) {
+func (s *Service) callOllama(ctx context.Context, rid string, req openai.ChatCompletionRequest, localModel string) ([]byte, openai.UsageDetails, error) {
+	log.Printf("[%s] ollama: calling url=%s model=%q", rid, s.cfg.OllamaChatURL, localModel)
+
 	payload := openai.OllamaChatRequest{
 		Model:    localModel,
 		Messages: req.Messages,
@@ -204,33 +244,43 @@ func (s *Service) callOllama(ctx context.Context, req openai.ChatCompletionReque
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
+		log.Printf("[%s] ollama: failed to marshal request: %v", rid, err)
 		return nil, openai.UsageDetails{}, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.OllamaChatURL, bytes.NewReader(encoded))
 	if err != nil {
+		log.Printf("[%s] ollama: failed to create request: %v", rid, err)
 		return nil, openai.UsageDetails{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := s.httpClient.Do(httpReq)
 	if err != nil {
+		log.Printf("[%s] ollama: request failed after %dms: %v", rid, time.Since(start).Milliseconds(), err)
 		return nil, openai.UsageDetails{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[%s] ollama: non-2xx response status=%d body_snippet=%s", rid, resp.StatusCode, truncate(string(body), 500))
 		return nil, openai.UsageDetails{}, fmt.Errorf("ollama returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[%s] ollama: failed to read response body: %v", rid, err)
 		return nil, openai.UsageDetails{}, err
 	}
 
+	log.Printf("[%s] ollama: response status=%d body_size=%d latency=%dms",
+		rid, resp.StatusCode, len(body), time.Since(start).Milliseconds())
+
 	var ollamaResp openai.OllamaChatResponse
 	if err := json.Unmarshal(body, &ollamaResp); err != nil {
+		log.Printf("[%s] ollama: failed to unmarshal response: %v", rid, err)
 		return nil, openai.UsageDetails{}, err
 	}
 
@@ -288,7 +338,7 @@ func (s *Service) logAudit(input ProcessInput, responseBody []byte, modelUsed st
 		LatencyMS:      latencyMS,
 	})
 	if err != nil {
-		log.Printf("audit log insert failed: %v", err)
+		log.Printf("[%s] audit: insert failed: %v", input.RequestID, err)
 	}
 }
 
@@ -321,4 +371,12 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// truncate returns at most maxLen characters of s, appending "…" if truncated.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }

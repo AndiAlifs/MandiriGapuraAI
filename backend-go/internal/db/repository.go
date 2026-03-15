@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type AuditLogInput struct {
 func NewRepository(dsn string) (*Repository, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
+		log.Printf("db: failed to open connection: %v", err)
 		return nil, err
 	}
 	db.SetConnMaxLifetime(5 * time.Minute)
@@ -48,6 +50,7 @@ func NewRepository(dsn string) (*Repository, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
+		log.Printf("db: ping failed: %v", err)
 		_ = db.Close()
 		return nil, err
 	}
@@ -75,8 +78,10 @@ func (r *Repository) AuthenticateApp(ctx context.Context, username, password str
 		&app.DailyTokenLimit,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("db: AuthenticateApp no row found for user=%q", username)
 			return nil, nil
 		}
+		log.Printf("db: AuthenticateApp query error for user=%q: %v", username, err)
 		return nil, err
 	}
 
@@ -94,6 +99,7 @@ func (r *Repository) DailyTokenUsage(ctx context.Context, appID int) (int, error
 
 	var usage int
 	if err := r.db.QueryRowContext(ctx, query, appID).Scan(&usage); err != nil {
+		log.Printf("db: DailyTokenUsage query error for app_id=%d: %v", appID, err)
 		return 0, err
 	}
 	return usage, nil
@@ -109,8 +115,10 @@ func (r *Repository) ModelProvider(ctx context.Context, modelName string) (strin
 	var provider string
 	if err := r.db.QueryRowContext(ctx, query, modelName).Scan(&provider); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("db: ModelProvider no registry entry for model=%q, defaulting to OpenAI", modelName)
 			return "OpenAI", nil // default provider when model not registered
 		}
+		log.Printf("db: ModelProvider query error for model=%q: %v", modelName, err)
 		return "", err
 	}
 	return provider, nil
@@ -127,8 +135,10 @@ func (r *Repository) LocalFallbackModel(ctx context.Context) (string, error) {
 	var model string
 	if err := r.db.QueryRowContext(ctx, query).Scan(&model); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("db: LocalFallbackModel no fallback configured, using default llama3-8b-local")
 			return "llama3-8b-local", nil
 		}
+		log.Printf("db: LocalFallbackModel query error: %v", err)
 		return "", err
 	}
 	return model, nil
@@ -162,6 +172,9 @@ func (r *Repository) InsertAuditLog(ctx context.Context, in AuditLogInput) error
 		in.CalculatedCost,
 		in.LatencyMS,
 	)
+	if err != nil {
+		log.Printf("db: InsertAuditLog failed for app_id=%d: %v", in.AppID, err)
+	}
 	return err
 }
 
