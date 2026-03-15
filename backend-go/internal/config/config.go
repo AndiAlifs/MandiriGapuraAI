@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -29,6 +31,8 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	_ = godotenv.Load() // Ignore error if .env doesn't exist or is missing
+
 	// ── Server port ───────────────────────────────────────────────────
 	// Accepts PORT or SERVER_PORT (PORT takes precedence).
 	port := envOrDefault("PORT", envOrDefault("SERVER_PORT", "8080"))
