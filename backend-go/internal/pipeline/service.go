@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkoukk/tiktoken-go"
+
 	"gapura/backend-go/internal/cache"
 	"gapura/backend-go/internal/config"
 	"gapura/backend-go/internal/db"
@@ -148,12 +150,12 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutpu
 
 	if cached, ok := s.cacheStore.Get(requestHash); ok {
 		log.Printf("[%s] pipeline: cache HIT hash=%s", rid, requestHash[:12])
-		return ProcessOutput{StatusCode: http.StatusOK, Body: cached, FromCache: true}, nil
+		return s.handleCacheHit(rid, cached, input, originalPrompt, scrubbedPrompt), nil
 	}
 	log.Printf("[%s] pipeline: cache MISS hash=%s, calling upstream", rid, requestHash[:12])
 
 	start := time.Now()
-	body, status, modelUsed, usage, err := s.callCloudWithFallback(ctx, rid, input.RawBody, input.Request)
+	body, status, modelInfo, usage, err := s.callCloudWithFallback(ctx, rid, input.RawBody, input.Request)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -162,31 +164,53 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutpu
 	}
 
 	log.Printf("[%s] pipeline: upstream responded status=%d model=%q tokens(in=%d out=%d) latency=%dms",
-		rid, status, modelUsed, usage.PromptTokens, usage.CompletionTokens, elapsed.Milliseconds())
+		rid, status, modelInfo.ModelName, usage.PromptTokens, usage.CompletionTokens, elapsed.Milliseconds())
 
 	if status >= 200 && status < 300 {
 		s.cacheStore.Set(requestHash, body)
 	}
 
-	go s.logAudit(input, body, modelUsed, usage, int(elapsed.Milliseconds()), originalPrompt, scrubbedPrompt)
+	go s.logAudit(input, body, modelInfo, usage, int(elapsed.Milliseconds()), originalPrompt, scrubbedPrompt, false)
 
 	return ProcessOutput{StatusCode: status, Body: body, FromCache: false}, nil
 }
 
-func (s *Service) callCloudWithFallback(ctx context.Context, rid string, rawBody []byte, req openai.ChatCompletionRequest) ([]byte, int, string, openai.UsageDetails, error) {
-	provider, err := s.repo.ModelProvider(ctx, req.Model)
+func (s *Service) handleCacheHit(rid string, cachedBody []byte, input ProcessInput, originalPrompt, scrubbedPrompt string) ProcessOutput {
+	// Re-parse model from original request to lookup rate card
+	modelInfo, err := s.repo.GetModelInfo(context.Background(), input.Request.Model)
+	if err != nil {
+		modelInfo = &db.ModelInfo{ModelName: input.Request.Model}
+	}
+
+	promptTokens := countPromptTokens(input.Request)
+	responseText := extractResponseText(cachedBody)
+	completionTokens := countTokens(responseText)
+
+	usage := openai.UsageDetails{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+	}
+
+	go s.logAudit(input, cachedBody, modelInfo, usage, 0, originalPrompt, scrubbedPrompt, true)
+
+	return ProcessOutput{StatusCode: http.StatusOK, Body: cachedBody, FromCache: true}
+}
+
+func (s *Service) callCloudWithFallback(ctx context.Context, rid string, rawBody []byte, req openai.ChatCompletionRequest) ([]byte, int, *db.ModelInfo, openai.UsageDetails, error) {
+	modelInfo, err := s.repo.GetModelInfo(ctx, req.Model)
 	if err != nil {
 		log.Printf("[%s] provider: model registry lookup failed for model=%q, defaulting to OpenAI: %v", rid, req.Model, err)
-		provider = "OpenAI"
+		modelInfo = &db.ModelInfo{ModelName: req.Model, Provider: "OpenAI"}
 	}
-	log.Printf("[%s] provider: selected provider=%q for model=%q", rid, provider, req.Model)
+	log.Printf("[%s] provider: selected provider=%q for model=%q", rid, modelInfo.Provider, req.Model)
 
 	var cloudBody []byte
 	var cloudStatus int
 	var cloudUsage openai.UsageDetails
 	var cloudErr error
 
-	switch strings.ToLower(provider) {
+	switch strings.ToLower(modelInfo.Provider) {
 	case "gemini":
 		log.Printf("[%s] provider: calling Gemini", rid)
 		cloudBody, cloudStatus, cloudUsage, cloudErr = s.callGemini(ctx, rid, rawBody)
@@ -196,37 +220,42 @@ func (s *Service) callCloudWithFallback(ctx context.Context, rid string, rawBody
 	}
 
 	if cloudErr == nil && cloudStatus >= 200 && cloudStatus < 300 {
-		return cloudBody, cloudStatus, req.Model, cloudUsage, nil
+		return cloudBody, cloudStatus, modelInfo, cloudUsage, nil
 	}
 
 	if cloudErr != nil {
 		log.Printf("[%s] provider: cloud call error, attempting local fallback: %v", rid, cloudErr)
 	} else if cloudStatus != http.StatusTooManyRequests && cloudStatus < 500 {
 		log.Printf("[%s] provider: cloud returned status=%d (non-retryable), returning as-is", rid, cloudStatus)
-		return cloudBody, cloudStatus, req.Model, cloudUsage, nil
+		return cloudBody, cloudStatus, modelInfo, cloudUsage, nil
 	} else {
 		log.Printf("[%s] provider: cloud returned status=%d, attempting local fallback. body_snippet=%s",
 			rid, cloudStatus, truncate(string(cloudBody), 500))
 	}
 
-	fallbackModel, err := s.repo.LocalFallbackModel(ctx)
+	fallbackModelName, err := s.repo.LocalFallbackModel(ctx)
 	if err != nil {
 		log.Printf("[%s] fallback: failed to get local fallback model: %v", rid, err)
-		return nil, 0, "", openai.UsageDetails{}, err
+		return nil, 0, nil, openai.UsageDetails{}, err
 	}
-	log.Printf("[%s] fallback: using local model=%q via Ollama", rid, fallbackModel)
+	log.Printf("[%s] fallback: using local model=%q via Ollama", rid, fallbackModelName)
 
-	fallbackBody, fallbackUsage, err := s.callOllama(ctx, rid, req, fallbackModel)
+	fallbackModelInfo, err := s.repo.GetModelInfo(ctx, fallbackModelName)
+	if err != nil {
+		fallbackModelInfo = &db.ModelInfo{ModelName: fallbackModelName, IsLocalFallback: true}
+	}
+
+	fallbackBody, fallbackUsage, err := s.callOllama(ctx, rid, req, fallbackModelName)
 	if err != nil {
 		log.Printf("[%s] fallback: Ollama call failed: %v", rid, err)
 		if cloudErr != nil {
-			return nil, 0, "", openai.UsageDetails{}, fmt.Errorf("cloud and fallback both failed: cloud=%w fallback=%v", cloudErr, err)
+			return nil, 0, nil, openai.UsageDetails{}, fmt.Errorf("cloud and fallback both failed: cloud=%w fallback=%v", cloudErr, err)
 		}
-		return nil, 0, "", openai.UsageDetails{}, err
+		return nil, 0, nil, openai.UsageDetails{}, err
 	}
 
-	log.Printf("[%s] fallback: Ollama responded successfully model=%q", rid, fallbackModel)
-	return fallbackBody, http.StatusOK, fallbackModel, fallbackUsage, nil
+	log.Printf("[%s] fallback: Ollama responded successfully model=%q", rid, fallbackModelName)
+	return fallbackBody, http.StatusOK, fallbackModelInfo, fallbackUsage, nil
 }
 
 // callProvider is the shared HTTP call used by callOpenAI and callGemini.
@@ -341,11 +370,11 @@ func (s *Service) callOllama(ctx context.Context, rid string, req openai.ChatCom
 
 	promptTokens := ollamaResp.PromptEvalCount
 	if promptTokens == 0 {
-		promptTokens = estimatePromptTokens(req)
+		promptTokens = countPromptTokens(req)
 	}
 	completionTokens := ollamaResp.EvalCount
 	if completionTokens == 0 {
-		completionTokens = maxInt(1, len(ollamaResp.Message.Content)/4)
+		completionTokens = countTokens(ollamaResp.Message.Content)
 	}
 
 	compat := openai.ChatCompletionResponse{
@@ -377,8 +406,19 @@ func (s *Service) callOllama(ctx context.Context, rid string, req openai.ChatCom
 	return encodedCompat, compat.Usage, nil
 }
 
-func (s *Service) logAudit(input ProcessInput, responseBody []byte, modelUsed string, usage openai.UsageDetails, latencyMS int, originalPrompt, scrubbedPrompt string) {
+func (s *Service) logAudit(input ProcessInput, responseBody []byte, modelInfo *db.ModelInfo, usage openai.UsageDetails, latencyMS int, originalPrompt, scrubbedPrompt string, isCacheHit bool) {
 	responseText := extractResponseText(responseBody)
+
+	calculatedCost := 0.0
+	if !isCacheHit && modelInfo != nil {
+		calculatedCost = (float64(usage.PromptTokens) * modelInfo.CostPer1kInput / 1000.0) +
+			(float64(usage.CompletionTokens) * modelInfo.CostPer1kOutput / 1000.0)
+	}
+
+	modelUsed := input.Request.Model
+	if modelInfo != nil && modelInfo.ModelName != "" {
+		modelUsed = modelInfo.ModelName
+	}
 
 	err := s.repo.InsertAuditLog(context.Background(), db.AuditLogInput{
 		AppID:          input.App.AppID,
@@ -388,7 +428,7 @@ func (s *Service) logAudit(input ProcessInput, responseBody []byte, modelUsed st
 		ResponseText:   responseText,
 		InputTokens:    usage.PromptTokens,
 		OutputTokens:   usage.CompletionTokens,
-		CalculatedCost: 0,
+		CalculatedCost: calculatedCost,
 		LatencyMS:      latencyMS,
 	})
 	if err != nil {
@@ -412,12 +452,17 @@ func extractResponseText(raw []byte) string {
 	return resp.Choices[0].Message.Content
 }
 
-func estimatePromptTokens(req openai.ChatCompletionRequest) int {
-	totalChars := 0
-	for _, m := range req.Messages {
-		totalChars += len(m.Content)
+func countTokens(text string) int {
+	tkm, err := tiktoken.GetEncoding("cl100k_base")
+	if err != nil {
+		return maxInt(1, len(text)/4)
 	}
-	return maxInt(1, totalChars/4)
+	tokens := tkm.Encode(text, nil, nil)
+	return maxInt(1, len(tokens))
+}
+
+func countPromptTokens(req openai.ChatCompletionRequest) int {
+	return countTokens(flattenPrompt(req))
 }
 
 func maxInt(a, b int) int {

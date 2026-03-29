@@ -37,6 +37,15 @@ type AuditLogInput struct {
 	LatencyMS      int
 }
 
+type ModelInfo struct {
+	ModelID         int
+	ModelName       string
+	Provider        string
+	CostPer1kInput  float64
+	CostPer1kOutput float64
+	IsLocalFallback bool
+}
+
 func NewRepository(dsn string) (*Repository, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -105,23 +114,36 @@ func (r *Repository) DailyTokenUsage(ctx context.Context, appID int) (int, error
 	return usage, nil
 }
 
-func (r *Repository) ModelProvider(ctx context.Context, modelName string) (string, error) {
+func (r *Repository) GetModelInfo(ctx context.Context, modelName string) (*ModelInfo, error) {
 	const query = `
-		SELECT Provider
+		SELECT ModelID, ModelName, Provider, CostPer1kInput, CostPer1kOutput, IsLocalFallback
 		FROM Model_Registry
 		WHERE ModelName = ?
 		LIMIT 1`
 
-	var provider string
-	if err := r.db.QueryRowContext(ctx, query, modelName).Scan(&provider); err != nil {
+	var info ModelInfo
+	if err := r.db.QueryRowContext(ctx, query, modelName).Scan(
+		&info.ModelID,
+		&info.ModelName,
+		&info.Provider,
+		&info.CostPer1kInput,
+		&info.CostPer1kOutput,
+		&info.IsLocalFallback,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("db: ModelProvider no registry entry for model=%q, defaulting to OpenAI", modelName)
-			return "OpenAI", nil // default provider when model not registered
+			log.Printf("db: GetModelInfo no registry entry for model=%q, defaulting to OpenAI", modelName)
+			return &ModelInfo{
+				ModelName:       modelName,
+				Provider:        "OpenAI",
+				CostPer1kInput:  0,
+				CostPer1kOutput: 0,
+				IsLocalFallback: false,
+			}, nil
 		}
-		log.Printf("db: ModelProvider query error for model=%q: %v", modelName, err)
-		return "", err
+		log.Printf("db: GetModelInfo query error for model=%q: %v", modelName, err)
+		return nil, err
 	}
-	return provider, nil
+	return &info, nil
 }
 
 func (r *Repository) LocalFallbackModel(ctx context.Context) (string, error) {
