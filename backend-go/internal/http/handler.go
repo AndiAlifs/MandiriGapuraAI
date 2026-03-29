@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"gapura/backend-go/internal/auth"
@@ -29,11 +30,16 @@ func RequestIDFromContext(ctx context.Context) string {
 }
 
 type Handler struct {
-	service *pipeline.Service
+	service   *pipeline.Service
+	authRealm string
 }
 
-func NewHandler(service *pipeline.Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *pipeline.Service, authRealm string) *Handler {
+	if strings.TrimSpace(authRealm) == "" {
+		authRealm = "gapura"
+	}
+
+	return &Handler{service: service, authRealm: authRealm}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -60,7 +66,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	username, password, err := auth.ParseCredentials(r)
 	if err != nil {
 		log.Printf("[%s] auth: credential parse failed: %v", reqID, err)
-		w.Header().Set("WWW-Authenticate", "Basic realm=\"gapura\"")
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf("Basic realm=%q", h.authRealm))
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing credentials"})
 		return
 	}
@@ -165,6 +171,75 @@ func loggingMiddleware(next http.Handler) http.Handler {
 
 		log.Printf("[%s] <-- %d %s (%dms)", reqID, rw.statusCode, http.StatusText(rw.statusCode), time.Since(start).Milliseconds())
 	})
+}
+
+type corsPolicy struct {
+	allowAll bool
+	origins  map[string]struct{}
+}
+
+// WithCORS adds origin-based CORS handling, including OPTIONS preflight responses.
+func WithCORS(next http.Handler, allowedOrigins string) http.Handler {
+	policy := parseCORSOrigins(allowedOrigins)
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		isPreflight := r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != ""
+
+		if isPreflight {
+			if origin != "" && !policy.isAllowed(origin) {
+				http.Error(w, "cors origin not allowed", http.StatusForbidden)
+				return
+			}
+			setCORSHeaders(w, origin, policy)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		if origin != "" && policy.isAllowed(origin) {
+			setCORSHeaders(w, origin, policy)
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func parseCORSOrigins(raw string) corsPolicy {
+	policy := corsPolicy{origins: make(map[string]struct{})}
+	for _, item := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(item)
+		if origin == "" {
+			continue
+		}
+		if origin == "*" {
+			policy.allowAll = true
+			continue
+		}
+		policy.origins[origin] = struct{}{}
+	}
+
+	return policy
+}
+
+func (p corsPolicy) isAllowed(origin string) bool {
+	if p.allowAll {
+		return true
+	}
+	_, ok := p.origins[origin]
+	return ok
+}
+
+func setCORSHeaders(w http.ResponseWriter, origin string, policy corsPolicy) {
+	if policy.allowAll {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	} else if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+	}
+
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Username, X-Password")
+	w.Header().Set("Access-Control-Max-Age", "600")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

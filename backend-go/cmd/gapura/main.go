@@ -43,11 +43,12 @@ func main() {
 
 	cacheStore := cache.NewMemoryCache(cfg.CacheTTL)
 	service := pipeline.NewService(cfg, repo, cacheStore)
-	handler := gatewayhttp.NewHandler(service)
+	handler := gatewayhttp.NewHandler(service, cfg.AuthRealm)
+	routes := gatewayhttp.WithCORS(handler.Routes(), cfg.CORSOrigin)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           handler.Routes(),
+		Handler:           routes,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

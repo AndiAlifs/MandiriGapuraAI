@@ -69,10 +69,6 @@ func Load() (Config, error) {
 		CORSOrigin:     envOrDefault("CORS_ORIGIN", "http://localhost:4200"),
 	}
 
-	if cfg.OpenAIAPIKey == "" && cfg.GeminiAPIKey == "" {
-		return Config{}, fmt.Errorf("at least one of OPENAI_API_KEY or GEMINI_API_KEY is required")
-	}
-
 	timeoutSeconds, err := intFromEnv("REQUEST_TIMEOUT_SECONDS", 10)
 	if err != nil {
 		return Config{}, err
