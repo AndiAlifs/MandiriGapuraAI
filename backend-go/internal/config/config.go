@@ -28,6 +28,9 @@ type Config struct {
 	// GIN/CORS
 	GinMode    string
 	CORSOrigin string
+	// TLS
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 func Load() (Config, error) {
@@ -67,6 +70,8 @@ func Load() (Config, error) {
 		AuthRealm:      envOrDefault("AUTH_REALM", "gapura"),
 		GinMode:        envOrDefault("GIN_MODE", "debug"),
 		CORSOrigin:     envOrDefault("CORS_ORIGIN", "http://localhost:4200"),
+		TLSCertFile:    os.Getenv("TLS_CERT_FILE"),
+		TLSKeyFile:     os.Getenv("TLS_KEY_FILE"),
 	}
 
 	timeoutSeconds, err := intFromEnv("REQUEST_TIMEOUT_SECONDS", 10)

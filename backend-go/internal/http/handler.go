@@ -111,13 +111,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[%s] request: model=%q messages=%d stream=%v", reqID, req.Model, len(req.Messages), req.Stream)
 
-	hash := h.service.HashRequest(req)
 	result, err := h.service.Process(r.Context(), pipeline.ProcessInput{
-		App:         *app,
-		RawBody:     rawBody,
-		Request:     req,
-		RequestHash: hash,
-		RequestID:   reqID,
+		App:       *app,
+		RawBody:   rawBody,
+		Request:   req,
+		RequestID: reqID,
 	})
 	if err != nil {
 		status := http.StatusBadGateway

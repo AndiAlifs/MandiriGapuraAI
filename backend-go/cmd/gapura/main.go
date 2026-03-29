@@ -53,9 +53,16 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("GAPURA Go backend running on %s", cfg.ListenAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+			log.Printf("GAPURA Go backend running on %s (TLS enabled)", cfg.ListenAddr)
+			if err := srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("tls server error: %v", err)
+			}
+		} else {
+			log.Printf("GAPURA Go backend running on %s (TLS disabled)", cfg.ListenAddr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("server error: %v", err)
+			}
 		}
 	}()
 

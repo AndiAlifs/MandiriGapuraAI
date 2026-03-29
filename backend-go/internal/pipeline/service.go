@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,11 +28,28 @@ type Service struct {
 }
 
 type ProcessInput struct {
-	App         db.AppAuth
-	RawBody     []byte
-	Request     openai.ChatCompletionRequest
-	RequestHash string
-	RequestID   string
+	App       db.AppAuth
+	RawBody   []byte
+	Request   openai.ChatCompletionRequest
+	RequestID string
+}
+
+var (
+	nikPattern     = regexp.MustCompile(`\b\d{16}\b`)
+	accountPattern = regexp.MustCompile(`\b\d{10,15}\b`)
+)
+
+func ScrubPII(text string) (string, int) {
+	maskedCount := 0
+	scrubbed := nikPattern.ReplaceAllStringFunc(text, func(s string) string {
+		maskedCount++
+		return "[NIK_MASKED]"
+	})
+	scrubbed = accountPattern.ReplaceAllStringFunc(scrubbed, func(s string) string {
+		maskedCount++
+		return "[ACCOUNT_MASKED]"
+	})
+	return scrubbed, maskedCount
 }
 
 type ProcessOutput struct {
@@ -91,11 +109,48 @@ func (s *Service) HashRequest(req openai.ChatCompletionRequest) string {
 func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutput, error) {
 	rid := input.RequestID
 
-	if cached, ok := s.cacheStore.Get(input.RequestHash); ok {
-		log.Printf("[%s] pipeline: cache HIT hash=%s", rid, input.RequestHash[:12])
+	// 1. Capture original prompt before scrubbing
+	originalPrompt := flattenPrompt(input.Request)
+
+	// 2. Apply NER scrubbing to all messages
+	var totalMasked int
+	for i, msg := range input.Request.Messages {
+		scrubbedContent, masked := ScrubPII(msg.Content)
+		if masked > 0 {
+			input.Request.Messages[i].Content = scrubbedContent
+			totalMasked += masked
+		}
+	}
+
+	if totalMasked > 0 {
+		log.Printf("[%s] pipeline: PII scrubbing complete — %d entities masked", rid, totalMasked)
+
+		// Re-marshal the modified raw body to preserve unknown fields
+		var raw map[string]interface{}
+		if err := json.Unmarshal(input.RawBody, &raw); err == nil {
+			if msgs, ok := raw["messages"].([]interface{}); ok {
+				for i, m := range msgs {
+					if mmap, ok := m.(map[string]interface{}); ok {
+						if _, hasContent := mmap["content"]; hasContent {
+							mmap["content"] = input.Request.Messages[i].Content
+						}
+					}
+				}
+			}
+			if newBody, err := json.Marshal(raw); err == nil {
+				input.RawBody = newBody
+			}
+		}
+	}
+
+	scrubbedPrompt := flattenPrompt(input.Request)
+	requestHash := s.HashRequest(input.Request)
+
+	if cached, ok := s.cacheStore.Get(requestHash); ok {
+		log.Printf("[%s] pipeline: cache HIT hash=%s", rid, requestHash[:12])
 		return ProcessOutput{StatusCode: http.StatusOK, Body: cached, FromCache: true}, nil
 	}
-	log.Printf("[%s] pipeline: cache MISS hash=%s, calling upstream", rid, input.RequestHash[:12])
+	log.Printf("[%s] pipeline: cache MISS hash=%s, calling upstream", rid, requestHash[:12])
 
 	start := time.Now()
 	body, status, modelUsed, usage, err := s.callCloudWithFallback(ctx, rid, input.RawBody, input.Request)
@@ -110,10 +165,10 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutpu
 		rid, status, modelUsed, usage.PromptTokens, usage.CompletionTokens, elapsed.Milliseconds())
 
 	if status >= 200 && status < 300 {
-		s.cacheStore.Set(input.RequestHash, body)
+		s.cacheStore.Set(requestHash, body)
 	}
 
-	go s.logAudit(input, body, modelUsed, usage, int(elapsed.Milliseconds()))
+	go s.logAudit(input, body, modelUsed, usage, int(elapsed.Milliseconds()), originalPrompt, scrubbedPrompt)
 
 	return ProcessOutput{StatusCode: status, Body: body, FromCache: false}, nil
 }
@@ -322,15 +377,14 @@ func (s *Service) callOllama(ctx context.Context, rid string, req openai.ChatCom
 	return encodedCompat, compat.Usage, nil
 }
 
-func (s *Service) logAudit(input ProcessInput, responseBody []byte, modelUsed string, usage openai.UsageDetails, latencyMS int) {
+func (s *Service) logAudit(input ProcessInput, responseBody []byte, modelUsed string, usage openai.UsageDetails, latencyMS int, originalPrompt, scrubbedPrompt string) {
 	responseText := extractResponseText(responseBody)
-	prompt := flattenPrompt(input.Request)
 
 	err := s.repo.InsertAuditLog(context.Background(), db.AuditLogInput{
 		AppID:          input.App.AppID,
 		ModelUsed:      modelUsed,
-		OriginalPrompt: prompt,
-		ScrubbedPrompt: prompt,
+		OriginalPrompt: originalPrompt,
+		ScrubbedPrompt: scrubbedPrompt,
 		ResponseText:   responseText,
 		InputTokens:    usage.PromptTokens,
 		OutputTokens:   usage.CompletionTokens,
