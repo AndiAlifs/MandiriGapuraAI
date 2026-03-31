@@ -205,9 +205,17 @@ func (s *Service) callCloudWithFallback(ctx context.Context, rid string, rawBody
 	var cloudErr error
 
 	switch strings.ToLower(provider) {
-	case "gemini":
-		log.Printf("[%s] provider: calling Gemini", rid)
+	case "google", "gemini":
+		log.Printf("[%s] provider: calling Gemini (Google)", rid)
 		cloudBody, cloudStatus, cloudUsage, cloudErr = s.callGemini(ctx, rid, rawBody)
+	case "ollama":
+		log.Printf("[%s] provider: calling Ollama directly", rid)
+		cloudBody, cloudUsage, cloudErr = s.callOllama(ctx, rid, req, req.Model)
+		if cloudErr != nil {
+			cloudStatus = http.StatusInternalServerError
+		} else {
+			cloudStatus = http.StatusOK
+		}
 	default:
 		log.Printf("[%s] provider: calling OpenAI", rid)
 		cloudBody, cloudStatus, cloudUsage, cloudErr = s.callOpenAI(ctx, rid, rawBody)

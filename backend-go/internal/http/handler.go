@@ -2,19 +2,22 @@ package http
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
+	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
 	"gapura/backend-go/internal/auth"
 	"gapura/backend-go/internal/db"
+	"gapura/backend-go/internal/logging"
 	"gapura/backend-go/internal/openai"
 	"gapura/backend-go/internal/pipeline"
 )
@@ -53,7 +56,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/v1/studio/scorecards", h.studioScorecards)
 	mux.HandleFunc("/v1/studio/audit-logs", h.studioAuditLogs)
 	mux.HandleFunc("/v1/studio/models", h.studioModels)
-	return loggingMiddleware(mux)
+	return loggingMiddleware(recoveryMiddleware(mux))
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -271,7 +274,8 @@ func (h *Handler) studioModels(w http.ResponseWriter, r *http.Request) {
 // responseWriter wraps http.ResponseWriter to capture the status code.
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode int
+	statusCode   int
+	bytesWritten int
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
@@ -279,24 +283,115 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+func (rw *responseWriter) Write(data []byte) (int, error) {
+	if rw.statusCode == 0 {
+		rw.statusCode = http.StatusOK
+	}
+	n, err := rw.ResponseWriter.Write(data)
+	rw.bytesWritten += n
+	return n, err
+}
+
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				reqID := RequestIDFromContext(r.Context())
+				logging.Errorw("http.request.panic", map[string]any{
+					"request_id": reqID,
+					"method":     r.Method,
+					"path":       r.URL.Path,
+					"panic":      fmt.Sprintf("%v", rec),
+					"stack":      string(debug.Stack()),
+				})
+				w.Header().Set("X-Request-ID", reqID)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{
+					"error":      "internal server error",
+					"request_id": reqID,
+				})
+			}
+		}()
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Generate a short unique request ID.
-		reqID := fmt.Sprintf("%04x%04x", time.Now().UnixMilli()&0xFFFF, rand.Intn(0xFFFF))
+		reqID := requestIDFromHeader(r)
 
-		// Inject request ID into context.
 		ctx := context.WithValue(r.Context(), requestIDKey, reqID)
 		r = r.WithContext(ctx)
+		w.Header().Set("X-Request-ID", reqID)
 
-		log.Printf("[%s] --> %s %s from %s", reqID, r.Method, r.URL.Path, r.RemoteAddr)
+		logging.Infow("http.request.started", map[string]any{
+			"request_id": reqID,
+			"method":     r.Method,
+			"path":       r.URL.Path,
+			"client_ip":  extractClientIP(r),
+			"user_agent": r.UserAgent(),
+		})
 
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK, bytesWritten: 0}
 		next.ServeHTTP(rw, r)
 
-		log.Printf("[%s] <-- %d %s (%dms)", reqID, rw.statusCode, http.StatusText(rw.statusCode), time.Since(start).Milliseconds())
+		logging.Infow("http.request.completed", map[string]any{
+			"request_id":    reqID,
+			"method":        r.Method,
+			"path":          r.URL.Path,
+			"status":        rw.statusCode,
+			"status_text":   http.StatusText(rw.statusCode),
+			"duration_ms":   time.Since(start).Milliseconds(),
+			"bytes_written": rw.bytesWritten,
+		})
 	})
+}
+
+func requestIDFromHeader(r *http.Request) string {
+	provided := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	if provided != "" && isSafeRequestID(provided) {
+		if len(provided) > 64 {
+			return provided[:64]
+		}
+		return provided
+	}
+
+	buf := make([]byte, 8)
+	if _, err := cryptorand.Read(buf); err == nil {
+		return fmt.Sprintf("%x", buf)
+	}
+
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func isSafeRequestID(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func extractClientIP(r *http.Request) string {
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		return xrip
+	}
+
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		return host
+	}
+
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 type corsPolicy struct {

@@ -1,8 +1,10 @@
 package http
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -135,5 +137,80 @@ func TestStudioCreateAppAuthValidation(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestLoggingMiddlewarePropagatesRequestID(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	h := loggingMiddleware(next)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("X-Request-ID", "abc-123")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, rr.Code)
+	}
+	if got := rr.Header().Get("X-Request-ID"); got != "abc-123" {
+		t.Fatalf("expected response request ID abc-123, got %q", got)
+	}
+}
+
+func TestLoggingMiddlewareGeneratesRequestID(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := loggingMiddleware(next)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	rid := rr.Header().Get("X-Request-ID")
+	if rid == "" {
+		t.Fatalf("expected generated request ID to be present")
+	}
+	isSafe := regexp.MustCompile(`^[A-Za-z0-9._-]+$`).MatchString
+	if !isSafe(rid) {
+		t.Fatalf("expected generated request ID to contain only safe chars, got %q", rid)
+	}
+}
+
+func TestRecoveryMiddlewareRecoversPanic(t *testing.T) {
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	})
+
+	h := loggingMiddleware(recoveryMiddleware(next))
+	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	req.Header.Set("X-Request-ID", "panic-req-1")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, rr.Code)
+	}
+	if got := rr.Header().Get("X-Request-ID"); got != "panic-req-1" {
+		t.Fatalf("expected panic response request ID panic-req-1, got %q", got)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON response body, got unmarshal error: %v", err)
+	}
+	if payload["error"] != "internal server error" {
+		t.Fatalf("expected internal server error message, got %q", payload["error"])
+	}
+	if payload["request_id"] != "panic-req-1" {
+		t.Fatalf("expected request_id panic-req-1, got %q", payload["request_id"])
 	}
 }

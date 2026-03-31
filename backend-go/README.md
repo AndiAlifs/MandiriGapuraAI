@@ -15,6 +15,8 @@ Server
 - PORT or SERVER_PORT (default: 8080)
 - AUTH_REALM (default: gapura)
 - CORS_ORIGIN (single origin, comma-separated origins, or *)
+- LOG_LEVEL (debug, info, warn, error; default: info)
+- LOG_FORMAT (text or json; default: text)
 
 Database
 - DB_HOST (default: 127.0.0.1)

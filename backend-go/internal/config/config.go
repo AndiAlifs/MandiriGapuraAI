@@ -12,6 +12,8 @@ import (
 type Config struct {
 	ListenAddr  string
 	DatabaseDSN string
+	LogLevel    string
+	LogFormat   string
 	// OpenAI
 	OpenAIBaseURL  string
 	OpenAIAPIKey   string
@@ -60,6 +62,8 @@ func Load() (Config, error) {
 	cfg := Config{
 		ListenAddr:     ":" + port,
 		DatabaseDSN:    dsn,
+		LogLevel:       envOrDefault("LOG_LEVEL", "info"),
+		LogFormat:      envOrDefault("LOG_FORMAT", "text"),
 		OpenAIBaseURL:  envOrDefault("OPENAI_BASE_URL", "https://api.openai.com"),
 		OpenAIAPIKey:   os.Getenv("OPENAI_API_KEY"),
 		OpenAIChatPath: envOrDefault("OPENAI_CHAT_PATH", "/v1/chat/completions"),

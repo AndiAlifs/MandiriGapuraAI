@@ -280,10 +280,10 @@ func (r *Repository) InsertAuditLog(ctx context.Context, in AuditLogInput) error
 
 func (r *Repository) GetStudioScorecards(ctx context.Context) (StudioScorecards, error) {
 	const piiQuery = `
-		SELECT COALESCE(SUM(
+		SELECT CAST(COALESCE(SUM(
 			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[NIK_MASKED]', ''))) / LENGTH('[NIK_MASKED]') +
 			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[ACCOUNT_MASKED]', ''))) / LENGTH('[ACCOUNT_MASKED]')
-		), 0)
+		), 0) AS INTEGER)
 		FROM Audit_Logs`
 
 	const savingsQuery = `
