@@ -50,7 +50,21 @@ export class AppComponent implements OnInit {
   curlSnippet = '';
   goSnippet = '';
 
+  selectedSnippetLang = 'curl';
+  copyFeedback = '';
+
   constructor(private readonly api: StudioApiService) {}
+
+  copySnippet(): void {
+    const snippet = this.selectedSnippetLang === 'curl' ? this.curlSnippet : this.goSnippet;
+    navigator.clipboard.writeText(snippet).then(() => {
+      this.copyFeedback = 'Copied!';
+      setTimeout(() => (this.copyFeedback = ''), 2000);
+    }).catch(() => {
+      this.copyFeedback = 'Failed';
+      setTimeout(() => (this.copyFeedback = ''), 2000);
+    });
+  }
 
   ngOnInit(): void {
     this.refreshModels();

@@ -175,6 +175,37 @@ button.ghost {
   background: var(--surface-soft);
 }
 
+.lang-select {
+  margin-top: 1rem;
+}
+
+.snippet-container {
+  padding: 0;
+  overflow: hidden;
+}
+
+.snippet-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0.8rem;
+  background: #e6ebe8;
+  border-bottom: 1px solid #dfe4de;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.copy-btn {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 6px;
+}
+
+.snippet-container pre {
+  padding: 0.72rem;
+}
+
 pre {
   margin: 0;
   max-height: 250px;

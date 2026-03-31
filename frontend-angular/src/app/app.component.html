@@ -92,14 +92,22 @@
         <p>One-click integration scaffolds with your selected model and credentials.</p>
       </header>
 
-      <div class="snippet-wrap">
-        <h3>cURL</h3>
-        <pre>{{ curlSnippet }}</pre>
-      </div>
+      <label class="lang-select">
+        Language
+        <select [(ngModel)]="selectedSnippetLang">
+          <option value="curl">cURL</option>
+          <option value="go">Go</option>
+        </select>
+      </label>
 
-      <div class="snippet-wrap">
-        <h3>Go</h3>
-        <pre>{{ goSnippet }}</pre>
+      <div class="snippet-wrap snippet-container">
+        <div class="snippet-header">
+          <span>{{ selectedSnippetLang === 'curl' ? 'cURL' : 'Go' }}</span>
+          <button class="ghost copy-btn" (click)="copySnippet()">
+            {{ copyFeedback || 'Copy' }}
+          </button>
+        </div>
+        <pre>{{ selectedSnippetLang === 'curl' ? curlSnippet : goSnippet }}</pre>
       </div>
     </article>
   </section>
