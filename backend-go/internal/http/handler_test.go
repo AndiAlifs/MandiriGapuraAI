@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +92,48 @@ func TestChatCompletionsUsesConfiguredRealm(t *testing.T) {
 	}
 	if got := rr.Header().Get("WWW-Authenticate"); got != "Basic realm=\"myrealm\"" {
 		t.Fatalf("unexpected WWW-Authenticate header: %q", got)
+	}
+}
+
+func TestStudioCreateAppAuthMethodNotAllowed(t *testing.T) {
+	h := NewHandler(nil, "gapura")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/studio/apps-auth", nil)
+	rr := httptest.NewRecorder()
+
+	h.studioCreateAppAuth(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rr.Code)
+	}
+	if got := rr.Header().Get("Allow"); got != http.MethodPost {
+		t.Fatalf("expected Allow header %q, got %q", http.MethodPost, got)
+	}
+}
+
+func TestStudioCreateAppAuthInvalidPayload(t *testing.T) {
+	h := NewHandler(nil, "gapura")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/studio/apps-auth", strings.NewReader("{"))
+	rr := httptest.NewRecorder()
+
+	h.studioCreateAppAuth(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestStudioCreateAppAuthValidation(t *testing.T) {
+	h := NewHandler(nil, "gapura")
+
+	body := `{"projectName":"","username":"user-a","password":"pass-a","dailyTokenLimit":0}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/studio/apps-auth", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	h.studioCreateAppAuth(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
 	}
 }

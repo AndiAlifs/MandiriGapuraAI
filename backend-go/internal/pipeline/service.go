@@ -93,6 +93,10 @@ func (s *Service) AuthenticateAndCheckQuota(ctx context.Context, username, passw
 	return app, nil
 }
 
+func (s *Service) CreateAppAuth(ctx context.Context, in db.CreateAppAuthInput) (*db.AppAuth, error) {
+	return s.repo.CreateAppAuth(ctx, in)
+}
+
 func (s *Service) StudioScorecards(ctx context.Context) (db.StudioScorecards, error) {
 	return s.repo.GetStudioScorecards(ctx)
 }

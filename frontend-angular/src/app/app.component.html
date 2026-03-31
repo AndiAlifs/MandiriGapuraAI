@@ -1,208 +1,280 @@
-<main class="studio-shell">
-  <section class="hero-panel">
-    <p class="kicker">GAPURA AI STUDIO</p>
-    <h1>Model Playground, Cost Intelligence, and Audit Depth in one cockpit.</h1>
-    <p class="hero-copy">
-      Validate prompts against live models, generate production-ready integration snippets,
-      and inspect every request with compliance-ready traceability.
-    </p>
-  </section>
+<div class="app-layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="assets/logo_mandiri.png" alt="Mandiri Gapura AI" class="logo" />
+      <span class="brand-text">Gapura AI Studio</span>
+    </div>
+    
+    <nav class="nav-menu">
+      <a class="nav-item active">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+        Cockpit
+      </a>
+      <a class="nav-item">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        Audit Logs
+      </a>
+      <a class="nav-item">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+        Integrations
+      </a>
+    </nav>
 
-  <section class="grid two-col">
-    <article class="card playground">
-      <header>
-        <h2>Model Playground</h2>
-        <p>Live prompt testing with token and cost simulation.</p>
-      </header>
-
-      <div class="form-grid">
-        <label>
-          Username
-          <input [(ngModel)]="username" (ngModelChange)="generateCodeSnippets()" placeholder="app username" />
-        </label>
-        <label>
-          Password
-          <input
-            [(ngModel)]="password"
-            (ngModelChange)="generateCodeSnippets()"
-            type="password"
-            placeholder="app password"
-          />
-        </label>
-      </div>
-
-      <label>
-        Model
-        <select [(ngModel)]="selectedModel" (ngModelChange)="recalculateEstimates()">
-          <option *ngFor="let model of models" [value]="model.modelName">{{ model.modelName }}</option>
-          <option *ngIf="models.length === 0" value="gpt-4o-mini">gpt-4o-mini</option>
-        </select>
-      </label>
-
-      <label>
-        System Prompt
-        <textarea [(ngModel)]="systemPrompt" (ngModelChange)="recalculateEstimates()" rows="3"></textarea>
-      </label>
-
-      <label>
-        User Prompt
-        <textarea [(ngModel)]="userPrompt" (ngModelChange)="recalculateEstimates()" rows="5"></textarea>
-      </label>
-
-      <div class="playground-actions">
-        <button (click)="runPlayground()" [disabled]="playgroundLoading">
-          {{ playgroundLoading ? 'Running...' : 'Run Prompt' }}
-        </button>
-        <p class="meta">Estimated input tokens: <strong>{{ estimatedInputTokens }}</strong></p>
-      </div>
-
-      <p class="error" *ngIf="playgroundError">{{ playgroundError }}</p>
-
-      <div class="response-box" *ngIf="assistantResponse">
-        <h3>Model Response</h3>
-        <pre>{{ assistantResponse }}</pre>
-        <p class="meta">
-          Input tokens: {{ promptTokens || estimatedInputTokens }} | Output tokens:
-          {{ completionTokens || 'N/A' }}
-        </p>
-      </div>
-
-      <div class="cost-table" *ngIf="simulatedCosts.length > 0">
-        <h3>Real-time Cost Simulation</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Model</th>
-              <th>Estimated Cost (USD)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr *ngFor="let row of simulatedCosts">
-              <td>{{ row.model }}</td>
-              <td>{{ row.total | number : '1.6-6' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </article>
-
-    <article class="card snippets">
-      <header>
-        <h2>Get Code Snippet Generator</h2>
-        <p>One-click integration scaffolds with your selected model and credentials.</p>
-      </header>
-
-      <label class="lang-select">
-        Language
-        <select [(ngModel)]="selectedSnippetLang">
-          <option value="curl">cURL</option>
-          <option value="go">Go</option>
-        </select>
-      </label>
-
-      <div class="snippet-wrap snippet-container">
-        <div class="snippet-header">
-          <span>{{ selectedSnippetLang === 'curl' ? 'cURL' : 'Go' }}</span>
-          <button class="ghost copy-btn" (click)="copySnippet()">
-            {{ copyFeedback || 'Copy' }}
-          </button>
-        </div>
-        <pre>{{ selectedSnippetLang === 'curl' ? curlSnippet : goSnippet }}</pre>
-      </div>
-    </article>
-  </section>
-
-  <section class="grid two-col">
-    <article class="card scorecards">
-      <header>
-        <h2>Executive Scorecards</h2>
-        <button class="ghost" (click)="refreshScorecards()">Refresh</button>
-      </header>
-
-      <div class="score-grid">
-        <div class="score-card">
-          <p>Total PII Entities Scrubbed</p>
-          <h3>{{ scorecards.total_pii_entities_scrubbed | number }}</h3>
-        </div>
-        <div class="score-card">
-          <p>Total API Cost Saved</p>
-          <h3>${{ scorecards.total_api_cost_saved | number : '1.2-6' }}</h3>
+    <div class="sidebar-footer">
+      <div class="user-profile">
+        <div class="avatar">Dev</div>
+        <div class="profile-info">
+          <span class="name">Developer</span>
+          <span class="role">Admin Mode</span>
         </div>
       </div>
-    </article>
+    </div>
+  </aside>
 
-    <article class="card audit">
-      <header>
-        <h2>Audit Trail Explorer</h2>
-        <p>Filter and expand logs to inspect latency, costs, prompts, and exact responses.</p>
-      </header>
-
-      <div class="form-grid">
-        <label>
-          Project Filter
-          <input [(ngModel)]="projectFilter" placeholder="e.g. PopCorn RAG" />
-        </label>
-        <label>
-          Model Filter
-          <input [(ngModel)]="modelFilter" placeholder="e.g. gpt-4o-mini" />
-        </label>
+  <main class="main-content">
+    <header class="topbar">
+      <div class="breadcrumbs">
+        <span>Workspace</span> <span class="separator">/</span> <strong>Dashboard Overview</strong>
       </div>
-
-      <div class="playground-actions">
-        <button (click)="refreshAuditLogs()">Apply Filters</button>
+      <div class="topbar-actions">
+        <span class="status-badge"><span class="dot"></span> Live Beta</span>
       </div>
+    </header>
 
-      <div class="audit-table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Project</th>
-              <th>Model</th>
-              <th>Latency</th>
-              <th>Cost</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <ng-container *ngFor="let log of auditLogs">
-              <tr>
-                <td>{{ log.timestamp | date : 'short' }}</td>
-                <td>{{ log.project_name }}</td>
-                <td>{{ log.model_used }}</td>
-                <td>{{ log.latency_ms }} ms</td>
-                <td>${{ log.calculated_cost | number : '1.2-6' }}</td>
-                <td>
-                  <button class="ghost" (click)="toggleAuditRow(log.log_id)">
-                    {{ isAuditExpanded(log.log_id) ? 'Hide' : 'View' }}
-                  </button>
-                </td>
-              </tr>
-              <tr *ngIf="isAuditExpanded(log.log_id)">
-                <td colspan="6" class="expanded-cell">
-                  <p><strong>Input Tokens:</strong> {{ log.input_tokens }}</p>
-                  <p><strong>Output Tokens:</strong> {{ log.output_tokens }}</p>
-                  <p><strong>Original Prompt:</strong></p>
-                  <pre>{{ log.original_prompt }}</pre>
-                  <p><strong>Scrubbed Prompt:</strong></p>
-                  <pre>{{ log.scrubbed_prompt }}</pre>
-                  <p><strong>Response:</strong></p>
-                  <pre>{{ log.response_text }}</pre>
-                </td>
-              </tr>
-            </ng-container>
-            <tr *ngIf="auditLogs.length === 0">
-              <td colspan="6" class="empty">No audit logs found for current filters.</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+    <div class="studio-shell">
+      <section class="hero-panel">
+        <div class="hero-content">
+          <p class="kicker">MANDIRI GAPURA AI</p>
+          <h1>Model Playground & Intelligence Cockpit</h1>
+          <p class="hero-copy">
+            Validate prompts against live models, generate production-ready integration snippets,
+            and inspect every request with compliance-ready traceability.
+          </p>
+        </div>
+      </section>
 
-      <div class="pagination-controls" *ngIf="auditLogs.length > 0 || auditOffset > 0">
-        <button class="ghost" [disabled]="auditOffset === 0" (click)="prevAuditPage()">Previous</button>
-        <span class="meta">Page {{ (auditOffset / auditLimit) + 1 }}</span>
-        <button class="ghost" [disabled]="!hasMoreAuditLogs" (click)="nextAuditPage()">Next</button>
-      </div>
-    </article>
-  </section>
-</main>
+      <section class="grid two-col">
+        <article class="card playground">
+          <header>
+            <div class="header-title">
+              <h2>Model Playground</h2>
+              <p>Live prompt testing with token and cost simulation.</p>
+            </div>
+          </header>
+
+          <div class="form-grid">
+            <label>
+              Username
+              <input [(ngModel)]="username" (ngModelChange)="generateCodeSnippets()" placeholder="App username" />
+            </label>
+            <label>
+              Password
+              <input [(ngModel)]="password" (ngModelChange)="generateCodeSnippets()" type="password" placeholder="App password" />
+            </label>
+          </div>
+
+          <label>
+            Model
+            <select [(ngModel)]="selectedModel" (ngModelChange)="recalculateEstimates()">
+              <option *ngFor="let model of models" [value]="model.modelName">{{ model.modelName }}</option>
+              <option *ngIf="models.length === 0" value="gpt-4o-mini">gpt-4o-mini</option>
+            </select>
+          </label>
+
+          <label>
+            System Prompt
+            <textarea [(ngModel)]="systemPrompt" (ngModelChange)="recalculateEstimates()" rows="3" placeholder="You are a helpful assistant..."></textarea>
+          </label>
+
+          <label>
+            User Prompt
+            <textarea [(ngModel)]="userPrompt" (ngModelChange)="recalculateEstimates()" rows="5" placeholder="Enter your prompt here..."></textarea>
+          </label>
+
+          <div class="playground-actions">
+            <button class="btn-primary" (click)="runPlayground()" [disabled]="playgroundLoading">
+              {{ playgroundLoading ? 'Running Simulation...' : 'Run Prompt' }}
+            </button>
+            <p class="meta">Est. input tokens: <span class="highlight">{{ estimatedInputTokens }}</span></p>
+          </div>
+
+          <p class="alert alert-error" *ngIf="playgroundError">{{ playgroundError }}</p>
+
+          <div class="response-box" *ngIf="assistantResponse">
+            <div class="box-header">
+              <h3>Model Response</h3>
+              <span class="token-metrics">
+                In: {{ promptTokens || estimatedInputTokens }} | Out: {{ completionTokens || 'N/A' }}
+              </span>
+            </div>
+            <pre class="response-content">{{ assistantResponse }}</pre>
+          </div>
+
+          <div class="cost-table" *ngIf="simulatedCosts.length > 0">
+            <h3>Real-time Cost Simulation</h3>
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th class="text-right">Estimated Cost (USD)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let row of simulatedCosts">
+                    <td><span class="model-badge">{{ row.model }}</span></td>
+                    <td class="text-right font-mono">{{ row.total | number : '1.6-6' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </article>
+
+        <div class="side-col">
+          <article class="card scorecards">
+            <header>
+              <div class="header-title">
+                <h2>Executive Scorecards</h2>
+              </div>
+              <button class="btn-ghost" (click)="refreshScorecards()">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" style="vertical-align: middle; margin-right: 4px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Sync
+              </button>
+            </header>
+
+            <div class="score-grid">
+              <div class="score-card">
+                <div class="score-icon scrub">
+                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                </div>
+                <div class="score-data">
+                  <p>PII Entities Scrubbed</p>
+                  <h3>{{ scorecards?.total_pii_entities_scrubbed || 0 | number }}</h3>
+                </div>
+              </div>
+              <div class="score-card">
+                <div class="score-icon cost">
+                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                </div>
+                <div class="score-data">
+                  <p>API Cost Saved (USD)</p>
+                  <h3>${{ scorecards?.total_api_cost_saved || 0 | number : '1.2-6' }}</h3>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card snippets mt-1">
+            <header>
+              <div class="header-title">
+                <h2>Code Generator</h2>
+                <p>One-click integration scaffold.</p>
+              </div>
+              <select class="minimal-select" [(ngModel)]="selectedSnippetLang">
+                <option value="curl">cURL</option>
+                <option value="go">Go</option>
+              </select>
+            </header>
+
+            <div class="snippet-wrap snippet-container dark-mode-code">
+              <div class="snippet-header">
+                <span class="lang-badge">{{ selectedSnippetLang === 'curl' ? 'Terminal' : 'Go Lang' }}</span>
+                <button class="btn-copy" (click)="copySnippet()">
+                  <svg *ngIf="copyFeedback" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" style="vertical-align: middle; margin-right: 4px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                  <svg *ngIf="!copyFeedback" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" style="vertical-align: middle; margin-right: 4px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                  {{ copyFeedback || 'Copy' }}
+                </button>
+              </div>
+              <pre><code>{{ selectedSnippetLang === 'curl' ? curlSnippet : goSnippet }}</code></pre>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="grid mt-1">
+        <article class="card audit">
+          <header>
+            <div class="header-title">
+              <h2>Audit Trail Explorer</h2>
+              <p>Filter logs to inspect latency, costs, prompts, and responses.</p>
+            </div>
+            <div class="filter-actions">
+              <input class="search-input" [(ngModel)]="projectFilter" placeholder="Filter Project" />
+              <input class="search-input" [(ngModel)]="modelFilter" placeholder="Filter Model" />
+              <button class="btn-secondary" (click)="refreshAuditLogs()">Search</button>
+            </div>
+          </header>
+
+          <div class="audit-table-wrap table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Project</th>
+                  <th>Model</th>
+                  <th>Latency</th>
+                  <th>Cost</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                <ng-container *ngFor="let log of auditLogs">
+                  <tr class="audit-row">
+                    <td class="whitespace-nowrap">{{ log.timestamp | date : 'short' }}</td>
+                    <td><strong>{{ log.project_name }}</strong></td>
+                    <td><span class="model-badge">{{ log.model_used }}</span></td>
+                    <td><span class="latency-cell">{{ log.latency_ms }} ms</span></td>
+                    <td class="font-mono">${{ log.calculated_cost | number : '1.2-6' }}</td>
+                    <td>
+                      <button class="btn-ghost btn-sm" (click)="toggleAuditRow(log.log_id)">
+                        {{ isAuditExpanded(log.log_id) ? 'Close' : 'Inspect' }}
+                      </button>
+                    </td>
+                  </tr>
+                  <tr *ngIf="isAuditExpanded(log.log_id)" class="expanded-row">
+                    <td colspan="6" class="expanded-cell">
+                      <div class="expanded-content">
+                        <div class="metrics-bar">
+                          <span><strong>Input Tokens:</strong> {{ log.input_tokens }}</span>
+                          <span><strong>Output Tokens:</strong> {{ log.output_tokens }}</span>
+                        </div>
+                        <div class="code-compare-grid">
+                          <div class="code-block">
+                            <span class="code-label">Original Prompt</span>
+                            <pre>{{ log.original_prompt }}</pre>
+                          </div>
+                          <div class="code-block">
+                            <span class="code-label scrubbed">Scrubbed Prompt</span>
+                            <pre>{{ log.scrubbed_prompt }}</pre>
+                          </div>
+                        </div>
+                        <div class="code-block mt-05">
+                          <span class="code-label response">Model Response</span>
+                          <pre>{{ log.response_text }}</pre>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </ng-container>
+                <tr *ngIf="auditLogs.length === 0">
+                  <td colspan="6" class="empty">
+                    <div class="empty-state">
+                      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="32"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                      <p>No audit logs found for current filters.</p>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pagination-controls" *ngIf="auditLogs.length > 0 || auditOffset > 0">
+            <button class="btn-ghost" [disabled]="auditOffset === 0" (click)="prevAuditPage()">Previous</button>
+            <span class="meta">Page {{ (auditOffset / auditLimit) + 1 }}</span>
+            <button class="btn-ghost" [disabled]="!hasMoreAuditLogs" (click)="nextAuditPage()">Next</button>
+          </div>
+        </article>
+      </section>
+    </div>
+  </main>
+</div>

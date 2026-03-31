@@ -17,6 +17,8 @@ import {
   styleUrl: './app.component.css'
 })
 export class AppComponent implements OnInit {
+  activeView: 'cockpit' | 'audit' | 'integrations' = 'cockpit';
+  
   username = '';
   password = '';
   selectedModel = 'gpt-4o-mini';

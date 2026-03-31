@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -48,6 +49,7 @@ func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
 	mux.HandleFunc("/v1/chat/completions", h.chatCompletions)
+	mux.HandleFunc("/v1/studio/apps-auth", h.studioCreateAppAuth)
 	mux.HandleFunc("/v1/studio/scorecards", h.studioScorecards)
 	mux.HandleFunc("/v1/studio/audit-logs", h.studioAuditLogs)
 	mux.HandleFunc("/v1/studio/models", h.studioModels)
@@ -161,6 +163,62 @@ func (h *Handler) studioScorecards(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, res)
+}
+
+type createAppAuthRequest struct {
+	ProjectName     string `json:"projectName"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	DailyTokenLimit int    `json:"dailyTokenLimit"`
+}
+
+func (h *Handler) studioCreateAppAuth(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req createAppAuthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[%s] studio create app auth invalid payload: %v", reqID, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	req.ProjectName = strings.TrimSpace(req.ProjectName)
+	req.Username = strings.TrimSpace(req.Username)
+	if req.ProjectName == "" || req.Username == "" || strings.TrimSpace(req.Password) == "" || req.DailyTokenLimit <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "projectName, username, password, and dailyTokenLimit (> 0) are required",
+		})
+		return
+	}
+
+	created, err := h.service.CreateAppAuth(r.Context(), db.CreateAppAuthInput{
+		ProjectName:     req.ProjectName,
+		Username:        req.Username,
+		Password:        req.Password,
+		DailyTokenLimit: req.DailyTokenLimit,
+	})
+	if err != nil {
+		if errors.Is(err, db.ErrAppAuthUsernameExists) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "username already exists"})
+			return
+		}
+
+		log.Printf("[%s] studio create app auth failed: %v", reqID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create app auth"})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"appID":           created.AppID,
+		"projectName":     created.ProjectName,
+		"username":        created.Username,
+		"dailyTokenLimit": created.DailyTokenLimit,
+	})
 }
 
 func (h *Handler) studioAuditLogs(w http.ResponseWriter, r *http.Request) {

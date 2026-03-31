@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -73,6 +73,15 @@ type AuditLogFilter struct {
 	Offset      int
 }
 
+type CreateAppAuthInput struct {
+	ProjectName     string
+	Username        string
+	Password        string
+	DailyTokenLimit int
+}
+
+var ErrAppAuthUsernameExists = errors.New("app auth username already exists")
+
 func NewRepository(dsn string) (*Repository, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -125,6 +134,48 @@ func (r *Repository) AuthenticateApp(ctx context.Context, username, password str
 		return nil, nil
 	}
 	return &app, nil
+}
+
+func (r *Repository) CreateAppAuth(ctx context.Context, in CreateAppAuthInput) (*AppAuth, error) {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("db: CreateAppAuth password hashing failed for user=%q: %v", in.Username, err)
+		return nil, err
+	}
+
+	const query = `
+		INSERT INTO Apps_Auth (ProjectName, Username, PasswordHash, DailyTokenLimit)
+		VALUES (?, ?, ?, ?)`
+
+	result, err := r.db.ExecContext(
+		ctx,
+		query,
+		in.ProjectName,
+		in.Username,
+		string(hashedPassword),
+		in.DailyTokenLimit,
+	)
+	if err != nil {
+		if isDuplicateEntryError(err) {
+			return nil, ErrAppAuthUsernameExists
+		}
+		log.Printf("db: CreateAppAuth insert failed for user=%q: %v", in.Username, err)
+		return nil, err
+	}
+
+	appID, err := result.LastInsertId()
+	if err != nil {
+		log.Printf("db: CreateAppAuth failed to get inserted id for user=%q: %v", in.Username, err)
+		return nil, err
+	}
+
+	return &AppAuth{
+		AppID:           int(appID),
+		ProjectName:     in.ProjectName,
+		Username:        in.Username,
+		PasswordHash:    string(hashedPassword),
+		DailyTokenLimit: in.DailyTokenLimit,
+	}, nil
 }
 
 func (r *Repository) DailyTokenUsage(ctx context.Context, appID int) (int, error) {
@@ -388,6 +439,14 @@ func passwordMatches(rawPassword, stored string) bool {
 		return bcrypt.CompareHashAndPassword([]byte(stored), []byte(rawPassword)) == nil
 	}
 	return rawPassword == stored
+}
+
+func isDuplicateEntryError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	return mysqlErr.Number == 1062
 }
 
 func FormatDSN(user, pass, host string, port int, dbName string) string {

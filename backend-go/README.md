@@ -2,6 +2,7 @@
 
 This service implements Epic 1 from the PRD:
 - OpenAI-compatible endpoint: POST /v1/chat/completions
+- Auth provisioning endpoint: POST /v1/studio/apps-auth
 - Provider routing from Model_Registry (OpenAI or Gemini) with automatic local fallback to Ollama
 - Exact-match response caching based on request hash
 - Header authentication with username/password (Basic auth or X-Username/X-Password)
@@ -48,3 +49,22 @@ go run ./cmd/gapura
 Use Basic auth (base64 of username:password) and OpenAI-compatible payload.
 
 POST http://localhost:5000/v1/chat/completions
+
+## 4) Create Auth Credential
+
+Create an Apps_Auth record for playground login.
+
+POST http://localhost:8080/v1/studio/apps-auth
+
+```json
+{
+	"projectName": "PopCorn RAG",
+	"username": "playground-user",
+	"password": "playground-pass",
+	"dailyTokenLimit": 500000
+}
+```
+
+Notes
+- Password is stored as bcrypt hash.
+- Duplicate usernames return HTTP 409.
