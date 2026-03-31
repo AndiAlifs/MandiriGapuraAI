@@ -38,12 +38,39 @@ type AuditLogInput struct {
 }
 
 type ModelInfo struct {
-	ModelID         int
-	ModelName       string
-	Provider        string
-	CostPer1kInput  float64
-	CostPer1kOutput float64
-	IsLocalFallback bool
+	ModelID         int     `json:"modelID"`
+	ModelName       string  `json:"modelName"`
+	Provider        string  `json:"provider"`
+	CostPer1kInput  float64 `json:"costPer1kInput"`
+	CostPer1kOutput float64 `json:"costPer1kOutput"`
+	IsLocalFallback bool    `json:"isLocalFallback"`
+}
+
+type StudioScorecards struct {
+	TotalPIIEntitiesScrubbed int     `json:"total_pii_entities_scrubbed"`
+	TotalAPICostSaved        float64 `json:"total_api_cost_saved"`
+}
+
+type AuditLogRecord struct {
+	LogID          int64     `json:"log_id"`
+	AppID          int       `json:"app_id"`
+	ProjectName    string    `json:"project_name"`
+	ModelUsed      string    `json:"model_used"`
+	OriginalPrompt string    `json:"original_prompt"`
+	ScrubbedPrompt string    `json:"scrubbed_prompt"`
+	ResponseText   string    `json:"response_text"`
+	InputTokens    int       `json:"input_tokens"`
+	OutputTokens   int       `json:"output_tokens"`
+	CalculatedCost float64   `json:"calculated_cost"`
+	LatencyMS      int       `json:"latency_ms"`
+	Timestamp      time.Time `json:"timestamp"`
+}
+
+type AuditLogFilter struct {
+	ProjectName string
+	ModelUsed   string
+	Limit       int
+	Offset      int
 }
 
 func NewRepository(dsn string) (*Repository, error) {
@@ -198,6 +225,162 @@ func (r *Repository) InsertAuditLog(ctx context.Context, in AuditLogInput) error
 		log.Printf("db: InsertAuditLog failed for app_id=%d: %v", in.AppID, err)
 	}
 	return err
+}
+
+func (r *Repository) GetStudioScorecards(ctx context.Context) (StudioScorecards, error) {
+	const piiQuery = `
+		SELECT COALESCE(SUM(
+			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[NIK_MASKED]', ''))) / LENGTH('[NIK_MASKED]') +
+			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[ACCOUNT_MASKED]', ''))) / LENGTH('[ACCOUNT_MASKED]')
+		), 0)
+		FROM Audit_Logs`
+
+	const savingsQuery = `
+		SELECT COALESCE(SUM(
+			((a.InputTokens / 1000.0) * base.CostPer1kInput) +
+			((a.OutputTokens / 1000.0) * base.CostPer1kOutput)
+		), 0)
+		FROM Audit_Logs a
+		JOIN Model_Registry used ON used.ModelName = a.ModelUsed
+		CROSS JOIN (
+			SELECT CostPer1kInput, CostPer1kOutput
+			FROM Model_Registry
+			WHERE IsLocalFallback = FALSE
+			ORDER BY (CostPer1kInput + CostPer1kOutput) ASC
+			LIMIT 1
+		) base
+		WHERE used.IsLocalFallback = TRUE`
+
+	var cards StudioScorecards
+	if err := r.db.QueryRowContext(ctx, piiQuery).Scan(&cards.TotalPIIEntitiesScrubbed); err != nil {
+		log.Printf("db: GetStudioScorecards pii query failed: %v", err)
+		return StudioScorecards{}, err
+	}
+
+	if err := r.db.QueryRowContext(ctx, savingsQuery).Scan(&cards.TotalAPICostSaved); err != nil {
+		log.Printf("db: GetStudioScorecards savings query failed: %v", err)
+		return StudioScorecards{}, err
+	}
+
+	return cards, nil
+}
+
+func (r *Repository) ListAuditLogs(ctx context.Context, filter AuditLogFilter) ([]AuditLogRecord, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = 50
+	}
+	if filter.Limit > 200 {
+		filter.Limit = 200
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+
+	query := `
+		SELECT
+			a.LogID,
+			a.AppID,
+			app.ProjectName,
+			a.ModelUsed,
+			a.OriginalPrompt,
+			a.ScrubbedPrompt,
+			a.ResponseText,
+			a.InputTokens,
+			a.OutputTokens,
+			a.CalculatedCost,
+			a.LatencyMS,
+			a.Timestamp
+		FROM Audit_Logs a
+		JOIN Apps_Auth app ON app.AppID = a.AppID
+		WHERE 1 = 1`
+
+	args := make([]any, 0, 4)
+	if strings.TrimSpace(filter.ProjectName) != "" {
+		query += ` AND app.ProjectName = ?`
+		args = append(args, strings.TrimSpace(filter.ProjectName))
+	}
+	if strings.TrimSpace(filter.ModelUsed) != "" {
+		query += ` AND a.ModelUsed = ?`
+		args = append(args, strings.TrimSpace(filter.ModelUsed))
+	}
+
+	query += ` ORDER BY a.Timestamp DESC LIMIT ? OFFSET ?`
+	args = append(args, filter.Limit, filter.Offset)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		log.Printf("db: ListAuditLogs query failed: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	logs := make([]AuditLogRecord, 0, filter.Limit)
+	for rows.Next() {
+		var rec AuditLogRecord
+		if err := rows.Scan(
+			&rec.LogID,
+			&rec.AppID,
+			&rec.ProjectName,
+			&rec.ModelUsed,
+			&rec.OriginalPrompt,
+			&rec.ScrubbedPrompt,
+			&rec.ResponseText,
+			&rec.InputTokens,
+			&rec.OutputTokens,
+			&rec.CalculatedCost,
+			&rec.LatencyMS,
+			&rec.Timestamp,
+		); err != nil {
+			log.Printf("db: ListAuditLogs scan failed: %v", err)
+			return nil, err
+		}
+		logs = append(logs, rec)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("db: ListAuditLogs row iteration failed: %v", err)
+		return nil, err
+	}
+
+	return logs, nil
+}
+
+func (r *Repository) ListModelRegistry(ctx context.Context) ([]ModelInfo, error) {
+	const query = `
+		SELECT ModelID, ModelName, Provider, CostPer1kInput, CostPer1kOutput, IsLocalFallback
+		FROM Model_Registry
+		ORDER BY IsLocalFallback ASC, ModelName ASC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		log.Printf("db: ListModelRegistry query failed: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	models := make([]ModelInfo, 0)
+	for rows.Next() {
+		var m ModelInfo
+		if err := rows.Scan(
+			&m.ModelID,
+			&m.ModelName,
+			&m.Provider,
+			&m.CostPer1kInput,
+			&m.CostPer1kOutput,
+			&m.IsLocalFallback,
+		); err != nil {
+			log.Printf("db: ListModelRegistry scan failed: %v", err)
+			return nil, err
+		}
+		models = append(models, m)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("db: ListModelRegistry row iteration failed: %v", err)
+		return nil, err
+	}
+
+	return models, nil
 }
 
 func passwordMatches(rawPassword, stored string) bool {

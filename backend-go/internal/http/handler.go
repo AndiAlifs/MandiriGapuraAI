@@ -8,10 +8,12 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"gapura/backend-go/internal/auth"
+	"gapura/backend-go/internal/db"
 	"gapura/backend-go/internal/openai"
 	"gapura/backend-go/internal/pipeline"
 )
@@ -46,6 +48,9 @@ func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
 	mux.HandleFunc("/v1/chat/completions", h.chatCompletions)
+	mux.HandleFunc("/v1/studio/scorecards", h.studioScorecards)
+	mux.HandleFunc("/v1/studio/audit-logs", h.studioAuditLogs)
+	mux.HandleFunc("/v1/studio/models", h.studioModels)
 	return loggingMiddleware(mux)
 }
 
@@ -138,6 +143,71 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(result.StatusCode)
 	_, _ = w.Write(result.Body)
+}
+
+func (h *Handler) studioScorecards(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	res, err := h.service.StudioScorecards(r.Context())
+	if err != nil {
+		log.Printf("[%s] studio scorecards failed: %v", reqID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load scorecards"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handler) studioAuditLogs(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	filter := db.AuditLogFilter{
+		ProjectName: strings.TrimSpace(r.URL.Query().Get("project")),
+		ModelUsed:   strings.TrimSpace(r.URL.Query().Get("model")),
+		Limit:       intQuery(r, "limit", 50),
+		Offset:      intQuery(r, "offset", 0),
+	}
+
+	res, err := h.service.StudioAuditLogs(r.Context(), filter)
+	if err != nil {
+		log.Printf("[%s] studio audit logs failed: %v", reqID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load audit logs"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  res,
+		"limit":  filter.Limit,
+		"offset": filter.Offset,
+	})
+}
+
+func (h *Handler) studioModels(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	res, err := h.service.StudioModels(r.Context())
+	if err != nil {
+		log.Printf("[%s] studio models failed: %v", reqID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load models"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"items": res})
 }
 
 // responseWriter wraps http.ResponseWriter to capture the status code.
@@ -248,4 +318,16 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func errorsIsContextCanceled(err error) bool {
 	return err == context.Canceled || err == context.DeadlineExceeded
+}
+
+func intQuery(r *http.Request, key string, fallback int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
