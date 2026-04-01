@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"gapura/backend-go/internal/auth"
 	"gapura/backend-go/internal/cache"
 	"gapura/backend-go/internal/config"
 	"gapura/backend-go/internal/db"
@@ -28,7 +29,7 @@ type Service struct {
 }
 
 type ProcessInput struct {
-	App       db.AppAuth
+	APIKey    db.APIKey
 	RawBody   []byte
 	Request   openai.ChatCompletionRequest
 	RequestID string
@@ -67,34 +68,17 @@ func NewService(cfg config.Config, repo *db.Repository, cacheStore *cache.Memory
 	}
 }
 
-func (s *Service) AuthenticateAndCheckQuota(ctx context.Context, username, password string) (*db.AppAuth, error) {
-	app, err := s.repo.AuthenticateApp(ctx, username, password)
+func (s *Service) AuthenticateAPIKey(ctx context.Context, plainToken string) (*db.APIKey, error) {
+	hash := auth.HashAPIKey(plainToken)
+	apiKey, err := s.repo.GetAPIKeyByHash(ctx, hash)
 	if err != nil {
 		return nil, err
 	}
-	if app == nil {
-		return nil, nil
-	}
-
-	usage, err := s.repo.DailyTokenUsage(ctx, app.AppID)
-	if err != nil {
-		return nil, err
-	}
-	if usage >= app.DailyTokenLimit {
-		return &db.AppAuth{
-			AppID:           -1,
-			ProjectName:     app.ProjectName,
-			Username:        app.Username,
-			PasswordHash:    app.PasswordHash,
-			DailyTokenLimit: app.DailyTokenLimit,
-		}, nil
-	}
-
-	return app, nil
+	return apiKey, nil
 }
 
-func (s *Service) CreateAppAuth(ctx context.Context, in db.CreateAppAuthInput) (*db.AppAuth, error) {
-	return s.repo.CreateAppAuth(ctx, in)
+func (s *Service) CreateAPIKey(ctx context.Context, key db.APIKey) (*db.APIKey, error) {
+	return s.repo.CreateAPIKey(ctx, key)
 }
 
 func (s *Service) StudioScorecards(ctx context.Context) (db.StudioScorecards, error) {
@@ -125,10 +109,7 @@ func (s *Service) HashRequest(req openai.ChatCompletionRequest) string {
 func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutput, error) {
 	rid := input.RequestID
 
-	// 1. Capture original prompt before scrubbing
-	originalPrompt := flattenPrompt(input.Request)
-
-	// 2. Apply NER scrubbing to all messages
+	// 1. Apply NER scrubbing to all messages
 	var totalMasked int
 	for i, msg := range input.Request.Messages {
 		scrubbedContent, masked := ScrubPII(msg.Content)
@@ -159,7 +140,6 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutpu
 		}
 	}
 
-	scrubbedPrompt := flattenPrompt(input.Request)
 	requestHash := s.HashRequest(input.Request)
 
 	if cached, ok := s.cacheStore.Get(requestHash); ok {
@@ -184,14 +164,14 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutpu
 		s.cacheStore.Set(requestHash, body)
 	}
 
-	go s.logAudit(input, body, modelUsed, usage, int(elapsed.Milliseconds()), originalPrompt, scrubbedPrompt)
+	go s.logUsage(input, body, modelUsed, usage, int(elapsed.Milliseconds()))
 
 	return ProcessOutput{StatusCode: status, Body: body, FromCache: false}, nil
 }
 
 func (s *Service) callCloudWithFallback(ctx context.Context, rid string, rawBody []byte, req openai.ChatCompletionRequest) ([]byte, int, string, openai.UsageDetails, error) {
 	provider := "OpenAI"
-	modelInfo, err := s.repo.GetModelInfo(ctx, req.Model)
+	modelInfo, err := s.repo.GetAIModel(ctx, req.Model)
 	if err != nil {
 		log.Printf("[%s] provider: model registry lookup failed for model=%q, defaulting to OpenAI: %v", rid, req.Model, err)
 	} else if modelInfo != nil && strings.TrimSpace(modelInfo.Provider) != "" {
@@ -403,22 +383,29 @@ func (s *Service) callOllama(ctx context.Context, rid string, req openai.ChatCom
 	return encodedCompat, compat.Usage, nil
 }
 
-func (s *Service) logAudit(input ProcessInput, responseBody []byte, modelUsed string, usage openai.UsageDetails, latencyMS int, originalPrompt, scrubbedPrompt string) {
-	responseText := extractResponseText(responseBody)
+func (s *Service) logUsage(input ProcessInput, responseBody []byte, modelUsed string, usage openai.UsageDetails, latencyMS int) {
+	modelInfo, err := s.repo.GetAIModel(context.Background(), modelUsed)
+	estimatedCost := 0.0
+	modelIDToStore := modelUsed
+	if err == nil && modelInfo != nil {
+		modelIDToStore = modelInfo.ID
+		estimatedCost = (float64(usage.PromptTokens) / 1000.0 * modelInfo.PromptCostPer1K) +
+			(float64(usage.CompletionTokens) / 1000.0 * modelInfo.CompletionCostPer1K)
+	}
 
-	err := s.repo.InsertAuditLog(context.Background(), db.AuditLogInput{
-		AppID:          input.App.AppID,
-		ModelUsed:      modelUsed,
-		OriginalPrompt: originalPrompt,
-		ScrubbedPrompt: scrubbedPrompt,
-		ResponseText:   responseText,
-		InputTokens:    usage.PromptTokens,
-		OutputTokens:   usage.CompletionTokens,
-		CalculatedCost: 0,
-		LatencyMS:      latencyMS,
+	err = s.repo.InsertUsageLog(context.Background(), db.UsageLog{
+		APIKeyID:         input.APIKey.ID,
+		Endpoint:         "/v1/chat/completions",
+		ModelID:          modelIDToStore,
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+		EstimatedCost:    estimatedCost,
+		LatencyMs:        latencyMS,
+		StatusCode:       200,
 	})
 	if err != nil {
-		log.Printf("[%s] audit: insert failed: %v", input.RequestID, err)
+		log.Printf("[%s] usage: insert failed: %v", input.RequestID, err)
 	}
 }
 

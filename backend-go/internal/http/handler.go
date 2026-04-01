@@ -4,7 +4,6 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -52,7 +51,7 @@ func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
 	mux.HandleFunc("/v1/chat/completions", h.chatCompletions)
-	mux.HandleFunc("/v1/studio/apps-auth", h.studioCreateAppAuth)
+	mux.HandleFunc("/v1/studio/api-keys", h.studioCreateAPIKey)
 	mux.HandleFunc("/v1/studio/scorecards", h.studioScorecards)
 	mux.HandleFunc("/v1/studio/audit-logs", h.studioAuditLogs)
 	mux.HandleFunc("/v1/studio/models", h.studioModels)
@@ -73,32 +72,27 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username, password, err := auth.ParseCredentials(r)
+	token, err := auth.ExtractBearerToken(r)
 	if err != nil {
 		log.Printf("[%s] auth: credential parse failed: %v", reqID, err)
-		w.Header().Set("WWW-Authenticate", fmt.Sprintf("Basic realm=%q", h.authRealm))
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=%q", h.authRealm))
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing credentials"})
 		return
 	}
 
-	log.Printf("[%s] auth: attempting login for user=%q", reqID, username)
-	app, err := h.service.AuthenticateAndCheckQuota(r.Context(), username, password)
+	log.Printf("[%s] auth: attempting login with token", reqID)
+	apiKey, err := h.service.AuthenticateAPIKey(r.Context(), token)
 	if err != nil {
-		log.Printf("[%s] auth: database error for user=%q: %v", reqID, username, err)
+		log.Printf("[%s] auth: database error: %v", reqID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		return
 	}
-	if app == nil {
-		log.Printf("[%s] auth: invalid credentials for user=%q", reqID, username)
+	if apiKey == nil {
+		log.Printf("[%s] auth: invalid credentials", reqID)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
-	if app.AppID == -1 {
-		log.Printf("[%s] auth: quota exceeded for user=%q project=%q", reqID, username, app.ProjectName)
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "daily token quota exceeded"})
-		return
-	}
-	log.Printf("[%s] auth: success user=%q app_id=%d project=%q", reqID, username, app.AppID, app.ProjectName)
+	log.Printf("[%s] auth: success api_key_id=%d project_id=%d", reqID, apiKey.ID, apiKey.ProjectID)
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -122,7 +116,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[%s] request: model=%q messages=%d stream=%v", reqID, req.Model, len(req.Messages), req.Stream)
 
 	result, err := h.service.Process(r.Context(), pipeline.ProcessInput{
-		App:       *app,
+		APIKey:    *apiKey,
 		RawBody:   rawBody,
 		Request:   req,
 		RequestID: reqID,
@@ -151,31 +145,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) studioScorecards(w http.ResponseWriter, r *http.Request) {
-	reqID := RequestIDFromContext(r.Context())
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	res, err := h.service.StudioScorecards(r.Context())
-	if err != nil {
-		log.Printf("[%s] studio scorecards failed: %v", reqID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load scorecards"})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, res)
+	// Temporarily returning 501 Not Implemented
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented yet"})
 }
 
-type createAppAuthRequest struct {
-	ProjectName     string `json:"projectName"`
-	Username        string `json:"username"`
-	Password        string `json:"password"`
-	DailyTokenLimit int    `json:"dailyTokenLimit"`
+type createAPIKeyRequest struct {
+	ProjectID string `json:"projectId"`
+	Name      string `json:"name"`
 }
 
-func (h *Handler) studioCreateAppAuth(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) studioCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -183,74 +162,50 @@ func (h *Handler) studioCreateAppAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req createAppAuthRequest
+	var req createAPIKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[%s] studio create app auth invalid payload: %v", reqID, err)
+		log.Printf("[%s] studio create api key invalid payload: %v", reqID, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
 	}
 
-	req.ProjectName = strings.TrimSpace(req.ProjectName)
-	req.Username = strings.TrimSpace(req.Username)
-	if req.ProjectName == "" || req.Username == "" || strings.TrimSpace(req.Password) == "" || req.DailyTokenLimit <= 0 {
+	req.Name = strings.TrimSpace(req.Name)
+	req.ProjectID = strings.TrimSpace(req.ProjectID)
+	if req.ProjectID == "" || req.Name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "projectName, username, password, and dailyTokenLimit (> 0) are required",
+			"error": "projectId and name are required",
 		})
 		return
 	}
 
-	created, err := h.service.CreateAppAuth(r.Context(), db.CreateAppAuthInput{
-		ProjectName:     req.ProjectName,
-		Username:        req.Username,
-		Password:        req.Password,
-		DailyTokenLimit: req.DailyTokenLimit,
-	})
-	if err != nil {
-		if errors.Is(err, db.ErrAppAuthUsernameExists) {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "username already exists"})
-			return
-		}
+	plainKey := auth.GeneratePlainAPIKey()
+	hash := auth.HashAPIKey(plainKey)
 
-		log.Printf("[%s] studio create app auth failed: %v", reqID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create app auth"})
+	// User requested to pass the hash and request details to h.service.CreateAPIKey
+	created, err := h.service.CreateAPIKey(r.Context(), db.APIKey{
+		ProjectID: req.ProjectID,
+		Name:      req.Name,
+		KeyHash:   hash,
+		IsActive:  true,
+	})
+
+	if err != nil {
+		log.Printf("[%s] studio create api key failed: %v", reqID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create api key"})
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"appID":           created.AppID,
-		"projectName":     created.ProjectName,
-		"username":        created.Username,
-		"dailyTokenLimit": created.DailyTokenLimit,
+		"id":        created.ID,
+		"projectId": created.ProjectID,
+		"name":      created.Name,
+		"plainKey":  plainKey, // CRITICAL: Only shown once
 	})
 }
 
 func (h *Handler) studioAuditLogs(w http.ResponseWriter, r *http.Request) {
-	reqID := RequestIDFromContext(r.Context())
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	filter := db.AuditLogFilter{
-		ProjectName: strings.TrimSpace(r.URL.Query().Get("project")),
-		ModelUsed:   strings.TrimSpace(r.URL.Query().Get("model")),
-		Limit:       intQuery(r, "limit", 50),
-		Offset:      intQuery(r, "offset", 0),
-	}
-
-	res, err := h.service.StudioAuditLogs(r.Context(), filter)
-	if err != nil {
-		log.Printf("[%s] studio audit logs failed: %v", reqID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load audit logs"})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items":  res,
-		"limit":  filter.Limit,
-		"offset": filter.Offset,
-	})
+	// Temporarily returning 501 Not Implemented
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented yet"})
 }
 
 func (h *Handler) studioModels(w http.ResponseWriter, r *http.Request) {
