@@ -23,7 +23,7 @@ export class StudioApiService {
     return this.http.get<ModelsResponse>(`${this.baseUrl}/v1/studio/models`);
   }
 
-  getAuditLogs(project: string, model: string, limit: number = 50, offset: number = 0): Observable<AuditLogsResponse> {
+  getAuditLogs(project: string, model: string, modelId: number | null, limit: number = 50, offset: number = 0): Observable<AuditLogsResponse> {
     let params = new HttpParams().set('limit', limit).set('offset', offset);
 
     if (project.trim()) {
@@ -31,6 +31,9 @@ export class StudioApiService {
     }
     if (model.trim()) {
       params = params.set('model', model.trim());
+    }
+    if (modelId !== null && Number.isFinite(modelId)) {
+      params = params.set('modelId', modelId);
     }
 
     return this.http.get<AuditLogsResponse>(`${this.baseUrl}/v1/studio/audit-logs`, {

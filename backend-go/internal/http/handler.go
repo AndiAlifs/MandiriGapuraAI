@@ -145,8 +145,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) studioScorecards(w http.ResponseWriter, r *http.Request) {
-	// Temporarily returning 501 Not Implemented
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented yet"})
+	reqID := RequestIDFromContext(r.Context())
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	res, err := h.service.StudioScorecards(r.Context())
+	if err != nil {
+		log.Printf("[%s] studio scorecards failed: %v", reqID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load scorecards"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
 }
 
 type createAPIKeyRequest struct {
@@ -215,8 +228,50 @@ func (h *Handler) studioCreateAppAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) studioAuditLogs(w http.ResponseWriter, r *http.Request) {
-	// Temporarily returning 501 Not Implemented
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented yet"})
+	reqID := RequestIDFromContext(r.Context())
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	modelID, hasModelID := intQueryOptional(r, "modelId")
+	if !hasModelID {
+		modelID, hasModelID = intQueryOptional(r, "model_id")
+	}
+
+	filter := db.AuditLogFilter{
+		ProjectName: strings.TrimSpace(r.URL.Query().Get("project")),
+		ModelUsed:   strings.TrimSpace(r.URL.Query().Get("model")),
+		Limit:       intQuery(r, "limit", 50),
+		Offset:      intQuery(r, "offset", 0),
+	}
+	if hasModelID {
+		filter.ModelID = &modelID
+	}
+
+	if filter.Limit <= 0 {
+		filter.Limit = 50
+	}
+	if filter.Limit > 200 {
+		filter.Limit = 200
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+
+	res, err := h.service.StudioAuditLogs(r.Context(), filter)
+	if err != nil {
+		log.Printf("[%s] studio audit logs failed: %v", reqID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load audit logs"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  res,
+		"limit":  filter.Limit,
+		"offset": filter.Offset,
+	})
 }
 
 func (h *Handler) studioModels(w http.ResponseWriter, r *http.Request) {
@@ -449,4 +504,16 @@ func intQuery(r *http.Request, key string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+func intQueryOptional(r *http.Request, key string) (int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }

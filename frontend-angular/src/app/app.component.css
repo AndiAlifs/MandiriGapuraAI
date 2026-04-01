@@ -397,6 +397,29 @@ button {
   font-size: 0.75rem;
 }
 
+.path-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #1E3A8A;
+  background: #DBEAFE;
+  border: 1px solid #BFDBFE;
+}
+
+.path-pill-local {
+  color: #065F46;
+  background: #ECFDF5;
+  border-color: #A7F3D0;
+}
+
+.zero-cost {
+  color: #047857;
+  font-weight: 700;
+}
+
 /* Playground Specifics */
 .playground-actions {
   display: flex;

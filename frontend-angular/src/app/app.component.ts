@@ -27,6 +27,7 @@ export class AppComponent implements OnInit {
 
   projectFilter = '';
   modelFilter = '';
+  modelIdFilter = '';
   auditLimit = 10;
   auditOffset = 0;
   hasMoreAuditLogs = false;
@@ -111,7 +112,10 @@ export class AppComponent implements OnInit {
   }
 
   fetchAuditLogs(): void {
-    this.api.getAuditLogs(this.projectFilter, this.modelFilter, this.auditLimit, this.auditOffset).subscribe({
+    const parsedModelID = Number.parseInt(this.modelIdFilter, 10);
+    const modelID = Number.isFinite(parsedModelID) ? parsedModelID : null;
+
+    this.api.getAuditLogs(this.projectFilter, this.modelFilter, modelID, this.auditLimit, this.auditOffset).subscribe({
       next: (res) => {
         this.auditLogs = res.items ?? [];
         this.hasMoreAuditLogs = this.auditLogs.length === this.auditLimit;
@@ -246,6 +250,23 @@ export class AppComponent implements OnInit {
 
   isAuditExpanded(logID: number): boolean {
     return this.selectedLogId === logID;
+  }
+
+  isZeroCost(log: AuditLogItem): boolean {
+    return (log.calculated_cost ?? 0) <= 0;
+  }
+
+  isLocalOrCached(log: AuditLogItem): boolean {
+    if (this.isZeroCost(log)) {
+      return true;
+    }
+
+    const model = this.models.find((item) => item.modelName === log.model_used);
+    return model?.isLocalFallback ?? false;
+  }
+
+  requestPathLabel(log: AuditLogItem): string {
+    return this.isLocalOrCached(log) ? 'Local / Cached' : 'Cloud';
   }
 
   private estimateTokens(text: string): number {

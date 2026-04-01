@@ -150,7 +150,7 @@
                 </div>
                 <div class="score-data">
                   <p>PII Entities Scrubbed</p>
-                  <h3>{{ scorecards?.total_pii_entities_scrubbed || 0 | number }}</h3>
+                  <h3>{{ scorecards.total_pii_entities_scrubbed || 0 | number }}</h3>
                 </div>
               </div>
               <div class="score-card">
@@ -159,7 +159,7 @@
                 </div>
                 <div class="score-data">
                   <p>API Cost Saved (USD)</p>
-                  <h3>${{ scorecards?.total_api_cost_saved || 0 | number : '1.2-6' }}</h3>
+                  <h3>${{ scorecards.total_api_cost_saved || 0 | number : '1.2-6' }}</h3>
                 </div>
               </div>
             </div>
@@ -202,6 +202,10 @@
             <div class="filter-actions">
               <input class="search-input" [(ngModel)]="projectFilter" placeholder="Filter Project" />
               <input class="search-input" [(ngModel)]="modelFilter" placeholder="Filter Model" />
+              <select class="search-input" [(ngModel)]="modelIdFilter">
+                <option value="">All Model IDs</option>
+                <option *ngFor="let model of models" [value]="model.modelID">{{ model.modelID }} - {{ model.modelName }}</option>
+              </select>
               <button class="btn-secondary" (click)="refreshAuditLogs()">Search</button>
             </div>
           </header>
@@ -213,6 +217,7 @@
                   <th>Timestamp</th>
                   <th>Project</th>
                   <th>Model</th>
+                  <th>Path</th>
                   <th>Latency</th>
                   <th>Cost</th>
                   <th>Details</th>
@@ -224,8 +229,15 @@
                     <td class="whitespace-nowrap">{{ log.timestamp | date : 'short' }}</td>
                     <td><strong>{{ log.project_name }}</strong></td>
                     <td><span class="model-badge">{{ log.model_used }}</span></td>
+                    <td>
+                      <span class="path-pill" [class.path-pill-local]="isLocalOrCached(log)">
+                        {{ requestPathLabel(log) }}
+                      </span>
+                    </td>
                     <td><span class="latency-cell">{{ log.latency_ms }} ms</span></td>
-                    <td class="font-mono">${{ log.calculated_cost | number : '1.2-6' }}</td>
+                    <td class="font-mono" [class.zero-cost]="isZeroCost(log)">
+                      ${{ log.calculated_cost | number : '1.2-6' }}
+                    </td>
                     <td>
                       <button class="btn-ghost btn-sm" (click)="toggleAuditRow(log.log_id)">
                         {{ isAuditExpanded(log.log_id) ? 'Close' : 'Inspect' }}
@@ -233,11 +245,12 @@
                     </td>
                   </tr>
                   <tr *ngIf="isAuditExpanded(log.log_id)" class="expanded-row">
-                    <td colspan="6" class="expanded-cell">
+                    <td colspan="7" class="expanded-cell">
                       <div class="expanded-content">
                         <div class="metrics-bar">
                           <span><strong>Input Tokens:</strong> {{ log.input_tokens }}</span>
                           <span><strong>Output Tokens:</strong> {{ log.output_tokens }}</span>
+                          <span><strong>Route:</strong> {{ requestPathLabel(log) }}</span>
                         </div>
                         <div class="code-compare-grid">
                           <div class="code-block">
@@ -258,7 +271,7 @@
                   </tr>
                 </ng-container>
                 <tr *ngIf="auditLogs.length === 0">
-                  <td colspan="6" class="empty">
+                  <td colspan="7" class="empty">
                     <div class="empty-state">
                       <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="32"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                       <p>No audit logs found for current filters.</p>

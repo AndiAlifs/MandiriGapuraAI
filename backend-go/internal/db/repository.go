@@ -69,6 +69,7 @@ type AuditLogRecord struct {
 type AuditLogFilter struct {
 	ProjectName string
 	ModelUsed   string
+	ModelID     *int
 	Limit       int
 	Offset      int
 }
@@ -433,7 +434,8 @@ func (r *Repository) GetStudioScorecards(ctx context.Context) (StudioScorecards,
 	const piiQuery = `
 		SELECT CAST(COALESCE(SUM(
 			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[NIK_MASKED]', ''))) / LENGTH('[NIK_MASKED]') +
-			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[ACCOUNT_MASKED]', ''))) / LENGTH('[ACCOUNT_MASKED]')
+			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[ACCOUNT_MASKED]', ''))) / LENGTH('[ACCOUNT_MASKED]') +
+			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[NAME_MASKED]', ''))) / LENGTH('[NAME_MASKED]')
 		), 0) AS INTEGER)
 		FROM Audit_Logs`
 
@@ -443,7 +445,7 @@ func (r *Repository) GetStudioScorecards(ctx context.Context) (StudioScorecards,
 			((a.OutputTokens / 1000.0) * base.CostPer1kOutput)
 		), 0)
 		FROM Audit_Logs a
-		JOIN Model_Registry used ON used.ModelName = a.ModelUsed
+		LEFT JOIN Model_Registry used ON used.ModelName = a.ModelUsed
 		CROSS JOIN (
 			SELECT CostPer1kInput, CostPer1kOutput
 			FROM Model_Registry
@@ -451,7 +453,7 @@ func (r *Repository) GetStudioScorecards(ctx context.Context) (StudioScorecards,
 			ORDER BY (CostPer1kInput + CostPer1kOutput) ASC
 			LIMIT 1
 		) base
-		WHERE used.IsLocalFallback = TRUE`
+		WHERE COALESCE(used.IsLocalFallback, FALSE) = TRUE OR a.LatencyMS <= 20`
 
 	var cards StudioScorecards
 	if err := r.db.QueryRowContext(ctx, piiQuery).Scan(&cards.TotalPIIEntitiesScrubbed); err != nil {
@@ -504,6 +506,13 @@ func (r *Repository) ListAuditLogs(ctx context.Context, filter AuditLogFilter) (
 	if strings.TrimSpace(filter.ModelUsed) != "" {
 		query += ` AND a.ModelUsed = ?`
 		args = append(args, strings.TrimSpace(filter.ModelUsed))
+	}
+	if filter.ModelID != nil {
+		query += ` AND EXISTS (
+			SELECT 1 FROM Model_Registry m
+			WHERE m.ModelID = ? AND m.ModelName = a.ModelUsed
+		)`
+		args = append(args, *filter.ModelID)
 	}
 
 	query += ` ORDER BY a.Timestamp DESC LIMIT ? OFFSET ?`
