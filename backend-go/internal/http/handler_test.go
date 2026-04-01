@@ -92,7 +92,7 @@ func TestChatCompletionsUsesConfiguredRealm(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rr.Code)
 	}
-	if got := rr.Header().Get("WWW-Authenticate"); got != "Basic realm=\"myrealm\"" {
+	if got := rr.Header().Get("WWW-Authenticate"); got != "Bearer realm=\"myrealm\"" {
 		t.Fatalf("unexpected WWW-Authenticate header: %q", got)
 	}
 }

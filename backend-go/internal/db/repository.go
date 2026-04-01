@@ -192,6 +192,65 @@ func (r *Repository) DailyTokenUsage(ctx context.Context, appID int) (int, error
 	return usage, nil
 }
 
+func (r *Repository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
+	const query = `
+		SELECT id, project_id, key_hash, name, rate_limit_rpm, is_active, created_at, expires_at
+		FROM API_Keys
+		WHERE key_hash = ? AND is_active = TRUE
+		LIMIT 1`
+
+	var key APIKey
+	var expiresAt sql.NullTime
+	if err := r.db.QueryRowContext(ctx, query, keyHash).Scan(
+		&key.ID,
+		&key.ProjectID,
+		&key.KeyHash,
+		&key.Name,
+		&key.RateLimitRPM,
+		&key.IsActive,
+		&key.CreatedAt,
+		&expiresAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		log.Printf("db: GetAPIKeyByHash query error: %v", err)
+		return nil, err
+	}
+
+	if expiresAt.Valid {
+		key.ExpiresAt = &expiresAt.Time
+	}
+
+	return &key, nil
+}
+
+func (r *Repository) CreateAPIKey(ctx context.Context, key APIKey) (*APIKey, error) {
+	if key.RateLimitRPM <= 0 {
+		key.RateLimitRPM = 60
+	}
+
+	const query = `
+		INSERT INTO API_Keys (project_id, key_hash, name, rate_limit_rpm, is_active, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?)`
+
+	_, err := r.db.ExecContext(ctx, query, key.ProjectID, key.KeyHash, key.Name, key.RateLimitRPM, key.IsActive, key.ExpiresAt)
+	if err != nil {
+		log.Printf("db: CreateAPIKey insert failed for project_id=%q name=%q: %v", key.ProjectID, key.Name, err)
+		return nil, err
+	}
+
+	created, err := r.GetAPIKeyByHash(ctx, key.KeyHash)
+	if err != nil {
+		return nil, err
+	}
+	if created == nil {
+		return nil, errors.New("api key created but not found")
+	}
+
+	return created, nil
+}
+
 func (r *Repository) GetModelInfo(ctx context.Context, modelName string) (*ModelInfo, error) {
 	const query = `
 		SELECT ModelID, ModelName, Provider, CostPer1kInput, CostPer1kOutput, IsLocalFallback
@@ -222,6 +281,25 @@ func (r *Repository) GetModelInfo(ctx context.Context, modelName string) (*Model
 		return nil, err
 	}
 	return &info, nil
+}
+
+func (r *Repository) GetAIModel(ctx context.Context, modelName string) (*AIModel, error) {
+	info, err := r.GetModelInfo(ctx, modelName)
+	if err != nil {
+		return nil, err
+	}
+	if info == nil {
+		return nil, nil
+	}
+
+	return &AIModel{
+		ID:                  info.ModelName,
+		Provider:            info.Provider,
+		ModelName:           info.ModelName,
+		PromptCostPer1K:     info.CostPer1kInput,
+		CompletionCostPer1K: info.CostPer1kOutput,
+		IsActive:            true,
+	}, nil
 }
 
 func (r *Repository) LocalFallbackModel(ctx context.Context) (string, error) {
@@ -274,6 +352,54 @@ func (r *Repository) InsertAuditLog(ctx context.Context, in AuditLogInput) error
 	)
 	if err != nil {
 		log.Printf("db: InsertAuditLog failed for app_id=%d: %v", in.AppID, err)
+	}
+	return err
+}
+
+func (r *Repository) InsertUsageLog(ctx context.Context, in UsageLog) error {
+	const query = `
+		INSERT INTO Usage_Logs (
+			api_key_id,
+			model_id,
+			prompt_template_id,
+			endpoint,
+			prompt_tokens,
+			completion_tokens,
+			total_tokens,
+			estimated_cost,
+			latency_ms,
+			status_code,
+			error_message
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	var promptTemplateID any
+	if in.PromptTemplateID != nil {
+		promptTemplateID = *in.PromptTemplateID
+	}
+
+	var errorMessage any
+	if in.ErrorMessage != nil {
+		errorMessage = *in.ErrorMessage
+	}
+
+	_, err := r.db.ExecContext(
+		ctx,
+		query,
+		in.APIKeyID,
+		in.ModelID,
+		promptTemplateID,
+		in.Endpoint,
+		in.PromptTokens,
+		in.CompletionTokens,
+		in.TotalTokens,
+		in.EstimatedCost,
+		in.LatencyMs,
+		in.StatusCode,
+		errorMessage,
+	)
+	if err != nil {
+		log.Printf("db: InsertUsageLog failed for api_key_id=%q: %v", in.APIKeyID, err)
 	}
 	return err
 }

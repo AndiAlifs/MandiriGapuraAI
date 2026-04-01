@@ -92,7 +92,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
-	log.Printf("[%s] auth: success api_key_id=%d project_id=%d", reqID, apiKey.ID, apiKey.ProjectID)
+	log.Printf("[%s] auth: success api_key_id=%s project_id=%s", reqID, apiKey.ID, apiKey.ProjectID)
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -201,6 +201,17 @@ func (h *Handler) studioCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		"name":      created.Name,
 		"plainKey":  plainKey, // CRITICAL: Only shown once
 	})
+}
+
+// StudioCreateAppAuthAction is kept as a compatibility shim for older tests/callers.
+// The current implementation provisions API keys via the studioCreateAPIKey handler.
+func (h *Handler) StudioCreateAppAuthAction(w http.ResponseWriter, r *http.Request) {
+	h.studioCreateAPIKey(w, r)
+}
+
+// studioCreateAppAuth is kept as a compatibility shim for older tests/callers.
+func (h *Handler) studioCreateAppAuth(w http.ResponseWriter, r *http.Request) {
+	h.studioCreateAPIKey(w, r)
 }
 
 func (h *Handler) studioAuditLogs(w http.ResponseWriter, r *http.Request) {
