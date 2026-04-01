@@ -436,7 +436,7 @@ func (r *Repository) GetStudioScorecards(ctx context.Context) (StudioScorecards,
 			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[NIK_MASKED]', ''))) / LENGTH('[NIK_MASKED]') +
 			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[ACCOUNT_MASKED]', ''))) / LENGTH('[ACCOUNT_MASKED]') +
 			(LENGTH(ScrubbedPrompt) - LENGTH(REPLACE(ScrubbedPrompt, '[NAME_MASKED]', ''))) / LENGTH('[NAME_MASKED]')
-		), 0) AS INTEGER)
+		), 0) AS SIGNED)
 		FROM Audit_Logs`
 
 	const savingsQuery = `

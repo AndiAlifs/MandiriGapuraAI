@@ -171,8 +171,8 @@ export class AppComponent implements OnInit {
     this.promptTokens = 0;
     this.completionTokens = 0;
 
-    if (!this.username.trim() || !this.password.trim()) {
-      this.playgroundError = 'Username and password are required to call /v1/chat/completions.';
+    if (!this.password.trim()) {
+      this.playgroundError = 'API key is required in the Password field to call /v1/chat/completions.';
       return;
     }
 
@@ -230,12 +230,11 @@ export class AppComponent implements OnInit {
   generateCodeSnippets(): void {
     const sanitizedPrompt = this.userPrompt.replace(/\"/g, '\\\"');
     const endpoint = 'http://localhost:8080/v1/chat/completions';
-    const authPair = `${this.username || 'YOUR_USERNAME'}:${this.password || 'YOUR_PASSWORD'}`;
-    const basic = btoa(authPair);
+    const apiKey = this.password || 'YOUR_API_KEY';
 
     this.curlSnippet = [
       `curl -X POST ${endpoint} \\\\`,
-      `  -H \"Authorization: Basic ${basic}\" \\\\`,
+      `  -H \"Authorization: Bearer ${apiKey}\" \\\\`,
       '  -H "Content-Type: application/json" \\\\',
       '  -d "{',
       `    \\\"model\\\": \\\"${this.selectedModel}\\\",`,
@@ -258,7 +257,7 @@ export class AppComponent implements OnInit {
       'func main() {',
       `  payload := []byte(\`{\"model\":\"${this.selectedModel}\",\"messages\":[{\"role\":\"user\",\"content\":\"${sanitizedPrompt || 'YOUR_PROMPT'}\"}],\"stream\":false}\`)`,
       `  req, _ := http.NewRequest("POST", "${endpoint}", bytes.NewBuffer(payload))`,
-      `  req.Header.Set("Authorization", "Basic ${basic}")`,
+      `  req.Header.Set("Authorization", "Bearer ${apiKey}")`,
       '  req.Header.Set("Content-Type", "application/json")',
       '  resp, err := http.DefaultClient.Do(req)',
       '  if err != nil { panic(err) }',

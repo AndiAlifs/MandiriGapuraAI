@@ -46,9 +46,9 @@ export class StudioApiService {
     password: string,
     payload: ChatCompletionRequest,
   ): Observable<ChatCompletionResponse> {
-    const basic = btoa(`${username}:${password}`);
+    void username;
     const headers = new HttpHeaders({
-      Authorization: `Basic ${basic}`,
+      Authorization: `Bearer ${password}`,
       'Content-Type': 'application/json',
     });
 
