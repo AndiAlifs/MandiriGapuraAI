@@ -48,3 +48,12 @@ type UsageLog struct {
 	ErrorMessage     *string   `db:"error_message" json:"errorMessage,omitempty"`
 	CreatedAt        time.Time `db:"created_at" json:"createdAt"`
 }
+
+type PromptTemplate struct {
+	ID           string   `db:"id" json:"id"`
+	ProjectID    string   `db:"project_id" json:"projectId"`
+	Name         string   `db:"name" json:"name"`
+	SystemPrompt string   `db:"system_prompt" json:"systemPrompt"`
+	Temperature  *float64 `db:"temperature" json:"temperature,omitempty"`
+	Version      int      `db:"version" json:"version"`
+}

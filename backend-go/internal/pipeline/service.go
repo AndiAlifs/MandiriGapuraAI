@@ -109,6 +109,16 @@ func (s *Service) HashRequest(req openai.ChatCompletionRequest) string {
 func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutput, error) {
 	rid := input.RequestID
 
+	// STREAM PROTECTION:
+	input.Request.Stream = false
+	var rawStreamProtect map[string]interface{}
+	if err := json.Unmarshal(input.RawBody, &rawStreamProtect); err == nil {
+		rawStreamProtect["stream"] = false
+		if newBody, err := json.Marshal(rawStreamProtect); err == nil {
+			input.RawBody = newBody
+		}
+	}
+
 	// 1. Apply NER scrubbing to all messages
 	var totalMasked int
 	for i, msg := range input.Request.Messages {
@@ -121,18 +131,32 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutpu
 
 	if totalMasked > 0 {
 		log.Printf("[%s] pipeline: PII scrubbing complete — %d entities masked", rid, totalMasked)
+	}
 
-		// Re-marshal the modified raw body to preserve unknown fields
+	var activeTemplateID *string
+	template, err := s.repo.GetActivePromptTemplate(ctx, input.APIKey.ProjectID)
+	templateApplied := false
+	if err == nil && template != nil {
+		activeTemplateID = &template.ID
+
+		if len(input.Request.Messages) > 0 && input.Request.Messages[0].Role == "system" {
+			input.Request.Messages[0].Content = template.SystemPrompt
+		} else {
+			input.Request.Messages = append([]openai.Message{{Role: "system", Content: template.SystemPrompt}}, input.Request.Messages...)
+		}
+
+		if template.Temperature != nil {
+			input.Request.Temperature = template.Temperature // Will update input.Request
+		}
+		templateApplied = true
+	}
+
+	if totalMasked > 0 || templateApplied {
 		var raw map[string]interface{}
 		if err := json.Unmarshal(input.RawBody, &raw); err == nil {
-			if msgs, ok := raw["messages"].([]interface{}); ok {
-				for i, m := range msgs {
-					if mmap, ok := m.(map[string]interface{}); ok {
-						if _, hasContent := mmap["content"]; hasContent {
-							mmap["content"] = input.Request.Messages[i].Content
-						}
-					}
-				}
+			raw["messages"] = input.Request.Messages
+			if templateApplied && template.Temperature != nil {
+				raw["temperature"] = *template.Temperature
 			}
 			if newBody, err := json.Marshal(raw); err == nil {
 				input.RawBody = newBody
@@ -164,7 +188,7 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessOutpu
 		s.cacheStore.Set(requestHash, body)
 	}
 
-	go s.logUsage(input, body, modelUsed, usage, int(elapsed.Milliseconds()))
+	go s.logUsage(input, body, modelUsed, usage, int(elapsed.Milliseconds()), activeTemplateID)
 
 	return ProcessOutput{StatusCode: status, Body: body, FromCache: false}, nil
 }
@@ -281,7 +305,7 @@ func (s *Service) callOpenAI(ctx context.Context, rid string, rawBody []byte) ([
 		log.Printf("[%s] openai: API key not configured", rid)
 		return nil, 0, openai.UsageDetails{}, fmt.Errorf("OPENAI_API_KEY not configured")
 	}
-	endpoint := strings.TrimRight(s.cfg.OpenAIBaseURL, "/") + s.cfg.OpenAIChatPath
+	endpoint := strings.TrimRight(s.cfg.OpenAIBaseURL, "/") + "/" + strings.TrimLeft(s.cfg.OpenAIChatPath, "/")
 	return s.callProvider(ctx, rid, rawBody, endpoint, "Authorization", "Bearer "+s.cfg.OpenAIAPIKey)
 }
 
@@ -291,7 +315,7 @@ func (s *Service) callGemini(ctx context.Context, rid string, rawBody []byte) ([
 		return nil, 0, openai.UsageDetails{}, fmt.Errorf("GEMINI_API_KEY not configured")
 	}
 	// Gemini's OpenAI-compatible endpoint uses standard Bearer auth.
-	endpoint := strings.TrimRight(s.cfg.GeminiBaseURL, "/") + s.cfg.GeminiChatPath
+	endpoint := strings.TrimRight(s.cfg.GeminiBaseURL, "/") + "/" + strings.TrimLeft(s.cfg.GeminiChatPath, "/")
 	return s.callProvider(ctx, rid, rawBody, endpoint, "Authorization", "Bearer "+s.cfg.GeminiAPIKey)
 }
 
@@ -383,7 +407,7 @@ func (s *Service) callOllama(ctx context.Context, rid string, req openai.ChatCom
 	return encodedCompat, compat.Usage, nil
 }
 
-func (s *Service) logUsage(input ProcessInput, responseBody []byte, modelUsed string, usage openai.UsageDetails, latencyMS int) {
+func (s *Service) logUsage(input ProcessInput, responseBody []byte, modelUsed string, usage openai.UsageDetails, latencyMS int, templateID *string) {
 	modelInfo, err := s.repo.GetAIModel(context.Background(), modelUsed)
 	estimatedCost := 0.0
 	modelIDToStore := modelUsed
@@ -397,6 +421,7 @@ func (s *Service) logUsage(input ProcessInput, responseBody []byte, modelUsed st
 		APIKeyID:         input.APIKey.ID,
 		Endpoint:         "/v1/chat/completions",
 		ModelID:          modelIDToStore,
+		PromptTemplateID: templateID,
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		TotalTokens:      usage.TotalTokens,

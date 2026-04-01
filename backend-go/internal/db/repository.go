@@ -251,6 +251,31 @@ func (r *Repository) CreateAPIKey(ctx context.Context, key APIKey) (*APIKey, err
 	return created, nil
 }
 
+func (r *Repository) GetActivePromptTemplate(ctx context.Context, projectID string) (*PromptTemplate, error) {
+	const query = `
+		SELECT id, project_id, name, system_prompt, temperature, version
+		FROM prompt_templates
+		WHERE project_id = ? AND is_active = TRUE
+		LIMIT 1`
+
+	var t PromptTemplate
+	if err := r.db.QueryRowContext(ctx, query, projectID).Scan(
+		&t.ID,
+		&t.ProjectID,
+		&t.Name,
+		&t.SystemPrompt,
+		&t.Temperature,
+		&t.Version,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &t, nil
+}
+
 func (r *Repository) GetModelInfo(ctx context.Context, modelName string) (*ModelInfo, error) {
 	const query = `
 		SELECT ModelID, ModelName, Provider, CostPer1kInput, CostPer1kOutput, IsLocalFallback
