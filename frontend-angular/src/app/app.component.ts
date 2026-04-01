@@ -58,6 +58,30 @@ export class AppComponent implements OnInit {
 
   constructor(private readonly api: StudioApiService) {}
 
+  get activeViewTitle(): string {
+    if (this.activeView === 'audit') {
+      return 'Audit Logs';
+    }
+    if (this.activeView === 'integrations') {
+      return 'Integrations';
+    }
+    return 'Dashboard Overview';
+  }
+
+  setActiveView(view: 'cockpit' | 'audit' | 'integrations'): void {
+    this.activeView = view;
+
+    const section = document.getElementById(view);
+    if (!section) {
+      return;
+    }
+
+    section.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+  }
+
   copySnippet(): void {
     const snippet = this.selectedSnippetLang === 'curl' ? this.curlSnippet : this.goSnippet;
     navigator.clipboard.writeText(snippet).then(() => {
